@@ -1,0 +1,19 @@
+opencode-routing-suite is an opencode port of the task-aware reasoning-mode
+router from:
+
+  https://github.com/yjh051108/dsh-routing-suite
+  preset submodule: dsh-router-standard (router-core.mjs — classifier + personas)
+
+The task classifier (REACT_RE / SPEC_RE keyword counting), the spec/react
+personas, and the measured three-band quantization (spec [0, 0.15] stable,
+transition band to avoid, react [0.5, 1] stable) are derived from that
+project. The spec persona and the RL-alignment claim come from the official
+DeepSeek Harness `minimal` preset snapshot.
+
+Acknowledgments (per upstream):
+
+- xiaobright/modeltest — Project2 / V4.1b evaluation methodology
+- xiaobright/dsh-anchored-standard — two-phase anchoring mechanism
+
+DeepSeek and DeepSeek Harness are names of their respective owners. This
+community project is not affiliated with or endorsed by DeepSeek or Anomaly.

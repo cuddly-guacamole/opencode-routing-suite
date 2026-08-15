@@ -1,0 +1,19 @@
+{
+  "name": "opencode-routing-suite",
+  "version": "0.1.0",
+  "description": "Task-aware reasoning-mode routing for opencode: spec (plan-first) for fixes, react (doer) for builds, weak (narrow) fallback — locked in on the first message, then full capability is restored",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.18",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}
