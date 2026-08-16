@@ -1,7 +1,7 @@
 {
   "name": "opencode-routing-suite",
-  "version": "0.1.0",
-  "description": "Task-aware reasoning-mode routing for opencode: spec (plan-first) for fixes, react (doer) for builds, weak (narrow) fallback — locked in on the first message, then full capability is restored",
+  "version": "0.2.0",
+  "description": "Task-aware reasoning-mode routing for opencode: spec + standard dual primary agents, three-band personas (react/spec/weak) injected on the first message, RL interface restoration (standard) — then full capability is restored",
   "type": "module",
   "private": true,
   "license": "MIT",
