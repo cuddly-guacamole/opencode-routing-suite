@@ -4,7 +4,6 @@ mode: primary
 permission:
   read: allow
   edit: ask
-  write: ask
   glob: ask
 ---
 

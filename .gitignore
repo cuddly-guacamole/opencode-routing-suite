@@ -6,10 +6,14 @@
 !plugins/routing-suite.ts
 !agents/
 !agents/spec.md
+!agents/standard.md
 
 # ── 文档 ──
 !README.md
 !README.zh-CN.md
+!docs/
+!docs/RATIONALE.md
+!docs/PORTING.md
 !LICENSE
 !NOTICE
 

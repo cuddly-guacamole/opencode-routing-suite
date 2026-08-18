@@ -5,21 +5,29 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /**
- * routing-suite v0.3.0 — dsh-router-standard @9727510 的 opencode 实现。
+ * routing-suite v0.3.1 — dsh-router-standard @9727510 的 opencode 实现。
  *
  * 基线：组件仓库 dsh-router-standard origin/main = 9727510（2026-08-18，
- * "v0.1.1 restore"：放弃 RL 接口还原，统一行为链）。
+ * "v0.1.1 restore"：恢复最简基线；标准 RL 接口还原方向在上游历史中保留）。
  *
- * 行为链（9727510 语义）：
+ * 行为链（9727510 语义 + v0.3.1 标准模式恢复）：
  *   1. chat.message：首条分类（三带 + weak，寒暄让位）→ 锚定 agent=spec；
  *      手动锁每轮改 agent；Tab 切非锁 agent 清锁。
- *   2. system.transform（每轮幂等）：读 state.band → personaFor(band, model) →
- *      幂等尾附（已含 persona 则跳过）；spec 幂等兜底（spec.md 已含则跳过）。
+ *      标准模式（RL 接口还原）：锚定 agent=standard（窄工具面）。
+ *   2. system.transform（每轮幂等）：
+ *      - standard：整体替换 system 为 RL 训练句（最小系统）。
+ *      - spec/react/weak：读 state.band → personaFor(band, model) →
+ *        幂等尾附（已含 persona 则跳过）。
  *   3. 近场引导（messages.transform，每轮弱带尾插 user 引导，OPENCODE_ROUTER_GUIDE=1）。
  *   4. dev_mode_subagent（opencode run 子进程，独立会话执行）。
  *
+ * v0.3.1 相对 v0.3.0 的变化：
+ *   - 恢复：standard band（RL 接口还原——训练句 + 标准 agent 窄工具面）。
+ *   - 新增：firstUserText 防御性捕获（移植自上游 spec preset issue #3 修复）。
+ *   - 新增：parseMode 接受 standard/rl 关键字。
+ *   - 修正：README 声明（上游9727510 并未放弃 standard，恢复说明）。
+ *
  * v0.3.0 相对 v0.2.0 的变化：
- *   - 删除：standard/RL 线（SAFETY_RULES/RL_SAFETY/standard band）。
  *   - 新增：personaFor 模型分支（Pro→WEAK_PRO / Flash→WEAK_FLASH）。
  *   - 新增：parseMode 数字接口（0-100/0.0-1.0/band 名/mixed）。
  *   - 新增：OPENCODE_ROUTER_WEAK_ANCHOR 回退开关（恢复旧 WEAK_FLASH 锚）。
@@ -42,6 +50,10 @@ import { join } from "node:path"
 
 // ── 注入文本常量（禁止凭记忆改写，以上游 dsh-router-standard @9727510 为准） ──
 
+/** standard 模式 RL 训练句（首轮整体替换 system） */
+const RL_PERSONA = "You are a helpful software engineer assistant."
+
+/** spec/react/weak 模式用 spec 句兜底 */
 const SPEC_PERSONA = "You are a helpful software engineer assistant."
 
 const REACT_PERSONA =
@@ -101,9 +113,19 @@ function isChatTask(text: unknown): boolean {
   return !t.match(REACT_RE) && !t.match(SPEC_RE)
 }
 
-/** 判断模型是否 Flash 系列（大小写不敏感） */
-function isFlashModel(modelId: unknown): boolean {
-  return typeof modelId === "string" && /flash/i.test(modelId)
+/** 判断模型是否 DeepSeek V4 系列（大小写不敏感） */
+function isDeepSeekV4(modelId: unknown): boolean {
+  return typeof modelId === "string" && /deepseek/i.test(modelId) && /v4/i.test(modelId)
+}
+
+/** 判断模型是否 DeepSeek V4 Flash（大小写不敏感） */
+function isDeepSeekV4Flash(modelId: unknown): boolean {
+  return typeof modelId === "string" && /deepseek/i.test(modelId) && /v4/i.test(modelId) && /flash/i.test(modelId)
+}
+
+/** 判断模型是否 DeepSeek V4 Pro（大小写不敏感） */
+function isDeepSeekV4Pro(modelId: unknown): boolean {
+  return typeof modelId === "string" && /deepseek/i.test(modelId) && /v4/i.test(modelId) && /pro/i.test(modelId)
 }
 
 /** 深度自适应：长消息或含架构关键词 → 复杂任务 */
@@ -120,10 +142,14 @@ function personaFor(band: string, modelId: unknown): string {
     case "spec": return SPEC_PERSONA
     case "react": return REACT_PERSONA
     case "weak":
-      if (isFlashModel(modelId)) {
+      if (isDeepSeekV4Flash(modelId)) {
         return WEAK_ANCHOR ? WEAK_FLASH_ANCHORED : WEAK_FLASH
       }
-      return WEAK_PRO
+      if (isDeepSeekV4Pro(modelId)) {
+        return WEAK_PRO
+      }
+      // 非 DeepSeek V4 模型：使用通用 persona（不注入 recall/anti-runaway 锚）
+      return SPEC_PERSONA
     default: return SPEC_PERSONA
   }
 }
@@ -139,6 +165,7 @@ function parseMode(token: string | null | undefined): number | string | null {
   const t = token.trim().toLowerCase()
   if (t === "auto") return "auto"
   if (t === "weak" || t === "router") return "weak"
+  if (t === "standard" || t === "rl") return "standard"
   if (t === "spec" || t === "spec-lean") return 0
   if (t === "balanced" || t === "mixed") return 0.3
   if (t === "react" || t === "react-lean") return 1
@@ -187,8 +214,11 @@ const AUTO = process.env.OPENCODE_ROUTER_AUTO === "1"
 const CRASH_TEST = process.env.OPENCODE_ROUTER_CRASH_TEST === "1"
 const GUIDE_ENABLED = process.env.OPENCODE_ROUTER_GUIDE === "1"
 
-type Band = "spec" | "react" | "weak" | "none"
+type Band = "spec" | "react" | "weak" | "standard" | "none"
 type TaskBand = "spec" | "react" | "weak"
+
+/** 标准/弱带锚 spec agent；RL 窄面锚 standard agent */
+const lockAgent = (m: Band): string => (m === "standard" ? "standard" : "spec")
 
 type SessionState = {
   band?: Band
@@ -196,9 +226,16 @@ type SessionState = {
   manual?: boolean
   lockMode?: Band
   lastGuidedMsgID?: string // 近场引导去重：追踪已注入的用户消息 ID
+  modelId?: string // 当前会话模型 ID
+  isDeepSeekV4?: boolean // 是否 DeepSeek V4 模型
 }
 
 const states = new Map<string, SessionState>()
+
+/** firstUserText: 防御性首条消息捕获（移植自上游 spec preset issue #3）。
+ *  有些运行时在首次 assembly 时尚未把首条用户消息写入 events，
+ *  此 Map 提前捕获文本供 sessionMode 回退读取。 */
+const firstUserText = new Map<string, string>()
 
 let faultCount = 0
 let selfDisabled = false
@@ -292,14 +329,15 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
 
         // A. 手动锁：每轮改 agent；Tab 切非锁 agent → 清锁
         if (state?.manual) {
-          if (count > 0 && agent && agent !== "build" && agent !== "spec") {
+          if (count > 0 && agent && agent !== "build" && agent !== lockAgent(state.lockMode ?? "spec")) {
             states.delete(sessionID)
             console.debug(`[routing-suite] session ${sessionID} 用户切换 agent=${agent}，清除模式锁`)
             return
           }
-          setAgent(output, "spec")
+          setAgent(output, lockAgent(state.lockMode ?? "spec"))
+          // band 跟随锁模式：transform 按 band 注入
           states.set(sessionID, { ...state, band: state.lockMode })
-          console.debug(`[routing-suite] session ${sessionID} 手动锁 ${state.lockMode} 生效`)
+          console.debug(`[routing-suite] session ${sessionID} 手动锁 ${state.lockMode} 生效，agent=${lockAgent(state.lockMode ?? "spec")}`)
           return
         }
 
@@ -310,6 +348,11 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
 
         const text = extractUserText(output)
 
+        // 捕获首条真实用户文本（防御性，移植自 spec preset issue #3）
+        if (!firstUserText.has(sessionID) && text.trim()) {
+          firstUserText.set(sessionID, text.trim())
+        }
+
         if (isChatTask(text)) {
           states.set(sessionID, { band: "none", handled: true })
           console.log(`[routing-suite] session ${sessionID} 寒暄命中，band=none`)
@@ -317,9 +360,12 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
         }
 
         const cls = classifyTask(text)
-        states.set(sessionID, { band: cls, handled: true })
+        // 捕获模型信息（从 output 消息中提取）
+        const msgModel = ((output?.message as any)?.info?.model ?? (output?.message as any)?.model) as string | undefined
+        const isDS4 = isDeepSeekV4(msgModel)
+        states.set(sessionID, { band: cls, handled: true, modelId: msgModel, isDeepSeekV4: isDS4 })
         setAgent(output, "spec")
-        console.log(`[routing-suite] session ${sessionID} 首条分类=${cls}，锚定 agent=spec`)
+        console.log(`[routing-suite] session ${sessionID} 首条分类=${cls}，锚定 agent=spec，model=${msgModel ?? "未知"}，deepseek-v4=${isDS4}`)
       } catch (err) {
         trip("chat.message", err)
       }
@@ -343,7 +389,20 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
         if (!band || band === "none") return
 
         const modelId = (input as any).model?.id ?? (input as any).model
-        const persona = personaFor(band, modelId)
+        const modelStr = typeof modelId === "string" ? modelId : String(modelId ?? "")
+
+        // standard 模式：整体替换 system 为 RL 训练句（RL 接口还原）
+        if (band === "standard") {
+          if (sys.includes(RL_PERSONA)) {
+            console.debug(`[routing-suite] session ${sessionID} transform 跳过（standard 已含 RL_PERSONA）`)
+            return
+          }
+          output.system[0] = RL_PERSONA
+          console.log(`[routing-suite] session ${sessionID} transform 注入 band=standard（RL 训练句整体替换）`)
+          return
+        }
+
+        const persona = personaFor(band, modelStr)
 
         // 幂等：已含 persona 则跳过
         if (sys.includes(persona)) {
@@ -352,7 +411,7 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
         }
 
         output.system[0] = sys + "\n\n" + persona
-        console.log(`[routing-suite] session ${sessionID} transform 注入 band=${band}`)
+        console.log(`[routing-suite] session ${sessionID} transform 注入 band=${band} model=${modelStr}`)
       } catch (err) {
         trip("experimental.chat.system.transform", err)
       }
@@ -380,7 +439,7 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
         if (!sessionID) return
         const state = states.get(sessionID)
         if (!state?.band || state.band === "none") return
-        if (state.band !== "weak") return // 近场引导仅 weak 带
+        if (state.band !== "weak") return // 近场引导仅 weak 带；standard 无引导
 
         const msgID = lastUserMsg.info.id
         if (state.lastGuidedMsgID === msgID) return // 去重：已注入
@@ -415,18 +474,21 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
     tool: {
       dev_router_status: tool({
         description:
-          "显示 routing-suite v0.3.0 路由状态：插件启用、版本金丝雀、自动路由、本会话 band/model、模式锁、熔断。只读。",
+          "显示 routing-suite v0.3.1 路由状态：插件启用、版本金丝雀、自动路由、本会话 band/model、模式锁、熔断。只读。",
         args: {},
         async execute(_args, ctx) {
           const s = states.get(ctx.sessionID)
           return {
-            title: "routing-suite v0.3.0 状态",
+            title: "routing-suite v0.3.1 状态",
             output: [
               `插件: ${selfDisabled ? "已禁用（熔断 " + faultCount + "/" + MAX_FAULTS + "）" : "启用"}`,
-              `版本: v0.3.0（基线9727510）`,
+              `版本: v0.3.1（基线9727510）`,
               `金丝雀: ${versionOk ? `pin ${PIN_VERSION} ✓` : `检测 ${versionDetected ?? "失败"}，禁用`}`,
               `自动路由: ${AUTO ? "ON" : "off"}`,
               `本会话 band: ${s?.band ?? "未分类"}`,
+              `本会话 persona: ${s?.band === "standard" ? "RL+SAFETY" : s?.band ?? "none"}`,
+              `本会话 model: ${s?.modelId ?? "未知"}`,
+              `DeepSeek V4: ${s?.isDeepSeekV4 ? "yes" : "no"}`,
               `本会话 agent: ${ctx.agent}`,
               `模式锁: ${s?.manual ? `${s.lockMode}（手动）` : "auto"}`,
               `WEAK_ANCHOR: ${WEAK_ANCHOR ? "ON（旧锚恢复）" : "off"}`,
@@ -439,18 +501,21 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
 
       dev_router_mode: tool({
         description:
-          "手动锁/解锁推理模式。spec=计划型；react=执行型；weak=弱模式（按模型选WEAK_PRO/WEAK_FLASH）；auto=解锁。接受 band 名、0-100、0.0-1.0、mixed。",
-        args: { mode: z.string().describe("spec/react/weak/auto 或 0-100 或 0.0-1.0 或 mixed") },
+          "手动锁/解锁推理模式。spec=计划型；react=执行型；weak=弱模式（按模型选WEAK_PRO/WEAK_FLASH）；standard=RL窄面（训练句+窄工具面）；auto=解锁。接受 band 名、0-100、0.0-1.0、mixed。",
+        args: { mode: z.string().describe("spec/react/weak/standard/auto 或 0-100 或 0.0-1.0 或 mixed") },
         async execute(args, ctx) {
           const parsed = parseMode(args.mode)
-          if (parsed === null) return `无效模式 "${args.mode}"：使用 spec/react/weak/auto、0-100、0.0-1.0、mixed`
+          if (parsed === null) return `无效模式 "${args.mode}"：使用 spec/react/weak/standard/auto、0-100、0.0-1.0、mixed`
           if (parsed === "auto") {
             states.delete(ctx.sessionID)
             return `已解锁（agent: ${ctx.agent}）。自动路由 ${AUTO ? "开启" : "未开启"}。`
           }
           const band: Band = typeof parsed === "string" ? parsed as Band : bandOf(parsed) as Band
+          const effect = band === "standard"
+            ? "system 替换为 RL 训练句（窄面模式）"
+            : `${band} persona 每轮尾附`
           states.set(ctx.sessionID, { band, manual: true, lockMode: band })
-          return `已锁定 ${band} 模式。Tab 切其他 agent 或再次调用选 auto 即解锁。`
+          return `已锁定 ${band} 模式（${effect}）。Tab 切其他 agent 或再次调用选 auto 即解锁。`
         },
       }),
 

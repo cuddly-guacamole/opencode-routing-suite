@@ -1,7 +1,7 @@
 {
   "name": "opencode-routing-suite",
-  "version": "0.3.0",
-  "description": "Task-aware reasoning-mode routing for opencode: spec primary agent, three-band personas with per-model selection, per-request idempotent injection, numeric mode interface — ported from dsh-router-standard @9727510",
+  "version": "0.3.1",
+  "description": "Task-aware reasoning-mode routing for opencode: spec + standard primary agents, three-band personas with per-model selection, per-request idempotent injection, numeric mode interface — ported from dsh-router-standard @9727510",
   "type": "module",
   "private": true,
   "license": "MIT",

@@ -1,181 +1,146 @@
-# opencode-routing-suite v0.3.0
+# opencode-routing-suite v0.3.1
 
 [中文说明](./README.zh-CN.md)
 
-Task-aware reasoning-mode routing for [opencode](https://opencode.ai): a single
-primary agent (**spec**, read-first) plus a thin plugin that injects a
-three-band persona (**react** / **spec** / **weak**) per-request with
-**per-model selection** (Pro → WEAK_PRO, Flash → WEAK_FLASH). Anchored
-**before the first model reply** via persona + first-turn tool schema; persona
-persists idempotently for the whole session; full capability from the second
-message on.
+让 [opencode](https://opencode.ai) 按任务类型自动切换工作方式——实测三带行为学
+（spec 计划型 / react 执行型 / weak 自路由），DeepSeek V4 模型专属优化；非
+DeepSeek V4 模型零干预。社区项目，与 Anomaly / DeepSeek 官方无关。
 
-This is a community project. It is not an official opencode plugin and is not
-affiliated with or endorsed by Anomaly or DeepSeek.
+## 两种工作方式
 
-**v0.3.0 breaking changes**: `standard` agent (RL narrow surface) and system
-replacement are **removed** (upstream 9727510 abandoned RL-interface). See
-[Compatibility](#compatibility) for migration.
-
-## Why
-
-Model behavior along the react↔spec axis collapses into three stable regions,
-not a continuum (measured on DeepSeek V4 Pro, 21-point probe, n=2): spec
-`[0, 0.15]`, an unstable transition band `[0.2, 0.45]` to avoid, and react
-`[0.5, 1.0]`. "Continuous" mode tuning is an illusion at the model layer —
-quantizing to three bands is the honest interface.
-
-The optimal weak persona is **model-specific** (P11, P24): Pro performs best
-with WEAK_PRO (spec sentence + classify instruction, no anchors); Flash
-performs best with WEAK_FLASH (+ recall/anti-runaway anchors, 100% single-task
-completion on P23). The plugin selects automatically based on the session model.
-
-## How it works
-
-### Static primary agent
-
-| Agent | Persona | Tool surface | Use for |
+| 工作方式 | 首轮注入 | 思考形态 | 适用 |
 |---|---|---|---|
-| `spec` | spec sentence (idempotent fallback; plugin persona wins) | read allowed; edit/write/glob ask; bash inherits global | architecture, reviews, planning, execution — all tasks |
+| **spec**（读先行·计划型） | "You are a helpful software engineer assistant." | 深度思考优先，超长推理链 | 架构、评审、规划、修复——读随便、写要问 |
+| **standard**（RL 窄面·执行型） | 训练句整体替换，工具面仅 bash+edit | 想一段做一段（think-act 循环） | 快速迭代：短循环改动文件 |
 
-### Per-request persona injection (v0.3.0, idempotent)
+运行原理：首条消息被分类（三带），插件在首个模型请求前注入匹配 persona + 首轮
+核心工具集，随后恢复完整能力。详细设计依据见 [docs/RATIONALE.md](./docs/RATIONALE.md)。
 
-On every model request, the plugin checks if the system already contains the
-target persona. If not, it appends the matching persona text (idempotent —
-never duplicates):
-
-| Band | Trigger | Injection |
-|---|---|---|
-| `react` | react keywords win (build tasks: "write", "implement"…) | full system kept + react persona appended |
-| `spec` | spec keywords win (fix tasks: "refactor", "debug"…) | spec persona appended (idempotent — skipped if `spec.md` already provides it) |
-| `weak` | tie / no keywords | full system kept + weak persona appended (**model-dependent**: Pro → WEAK_PRO, Flash → WEAK_FLASH) |
-| `none` | chat / greeting / empty message (`CHAT_RE`) | **not routed** — greeting lets the session be, no injection |
-
-### Tools
-
-- **`dev_router_status`** — shows plugin state, version, auto-routing, band,
-  agent, mode lock, circuit breaker. Read-only.
-- **`dev_router_mode <mode>`** — manually lock/unlock. Accepts band names
-  (`spec`/`react`/`weak`/`auto`), numeric 0-100, 0.0-1.0, or `mixed`. Manual
-  lock persists until Tab-away or `auto`.
-
-### Automatic routing (opt-in)
-
-Start opencode with `OPENCODE_ROUTER_AUTO=1`. On the **first message** of a
-session, a keyword-counting classifier (ported from mode-boost) picks the band.
-Chat/greeting messages are **left alone** (band `none`). From the second
-message on, the session runs with full `build` capability.
-
-If the user has manually picked an agent (anything other than `build`), the
-router does not intervene.
-
-## Install
-
-1. Copy the agent file:
-
-   ```sh
-   cp agents/spec.md ~/.config/opencode/agents/
-   ```
-
-2. Copy the plugin:
-
-   ```sh
-   cp plugins/routing-suite.ts ~/.config/opencode/plugins/
-   ```
-
-3. Restart opencode, then press **Tab** to cycle to the `spec` agent.
-
-4. Optional: register the debug tools in `opencode.jsonc`:
-
-   ```jsonc
-   "permission": {
-     "dev_router_status": "allow",
-     "dev_router_mode": "ask"
-   }
-   ```
-
-## Usage
-
-- **Manual**: Tab to `spec` and work as usual.
-- **Per-session lock**: `dev_router_mode weak` (or call the tool) to force a
-  mode — persona is injected on every request. Tab to another agent or call
-  `dev_router_mode auto` to unlock.
-- **Automatic**: `OPENCODE_ROUTER_AUTO=1` at startup.
-
-### Environment variables
-
-| Variable | Default | Effect |
-|---|---|---|
-| `OPENCODE_ROUTER_AUTO` | off | `1` enables first-message auto routing |
-| `OPENCODE_ROUTER_ENABLED` | on | `0` fully disables the plugin |
-| `OPENCODE_ROUTER_ALLOW_VERSION` | — | force-allow a canary version |
-| `OPENCODE_ROUTER_CRASH_TEST` | off | `1` injects a hook exception to verify fail-open |
-| `OPENCODE_ROUTER_WEAK_ANCHOR` | off | `1` restores old WEAK_FLASH with deep-first anchor (P23 fallback) |
-| `OPENCODE_ROUTER_GUIDE` | off | `1` enables near-field guidance |
-
-## Compatibility
-
-- Developed against opencode **1.18.18** (V1 plugin API).
-- Ported from [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-  (MIT). **v0.3.0 aligns with upstream dsh-router-standard `9727510`** (2026-08-18):
-  single unified behavior chain — classify → `personaFor(mode, modelId)` →
-  first-turn core tools → full catalog after first tool call → near-field
-  guidance (weak band). Upstream abandoned the `standard` (RL interface
-  restoration) direction in this commit. The upstream suite contains two other
-  submodules not ported: **dsh-super-injector** (DSH-specific Cordis runtime
-  injection manager, incompatible with opencode's plugin model) and
-  **dsh-mode-boost** (removed from upstream; its classifier is now built into
-  router-core.mjs).
-- **opencode 2.0**: V1 plugin API is not supported in V2. Core logic is
-  decoupled from V1 hooks (pure functions in the plugin header). V2 migration
-  will be a thin adapter rewrite (chat.message → session.hook("context"),
-  system.transform → event.system, tool → tool.transform).
-
-### v0.2.0 → v0.3.0 migration
-
-| Change | Impact | Action |
-|---|---|---|
-| `standard` agent removed | `agents/standard.md` no longer used | Delete from `~/.config/opencode/agents/` |
-| RL system replacement removed | `dev_router_mode standard` no longer works | Use `weak` for internal routing mode |
-| Persona now injected every request | System prompt has persona on every LLM call | No action (cache-neutral, idempotent) |
-| `OPENCODE_ROUTER_RESTORE_AGENT` removed | No longer needed (build restored automatically) | Remove from env if set |
-
-## Safety
-
-- Every hook wrapped in try/catch: **fail-open** (fault logged, message untouched).
-- After 3 consecutive faults: self-disables, clears all state.
-- Per-session `Map` isolation — sessions never share locks.
-- No network requests, no telemetry.
-
-## Verify
+## 快速开始
 
 ```sh
-npm install && npm run check
+cp agents/spec.md agents/standard.md ~/.config/opencode/agents/
+cp plugins/routing-suite.ts ~/.config/opencode/plugins/
 ```
 
-Manual checklist:
+重启 opencode，按 **Tab** 切到 `spec` 或 `standard` agent，调用 `dev_router_status`
+验证生效。
 
-- [ ] Tab cycles to `spec`; `spec` prompts before write/edit.
-- [ ] `dev_router_status` reports sane values (v0.3.0, band, agent).
-- [ ] With `OPENCODE_ROUTER_AUTO=1`: "write a python script" → react persona;
-      "refactor this module" → spec persona; "你好" → not routed.
-- [ ] `dev_router_mode 42` → band react; `0.3` → mixed; `weak` → weak.
-- [ ] Crash injection: `OPENCODE_ROUTER_CRASH_TEST=1`, 3 faults → self-disable.
-- [ ] `OPENCODE_ROUTER_WEAK_ANCHOR=1` → WEAK_FLASH contains "Think deeply first".
-- [ ] Delete files → clean-install behavior.
+可选：在 `opencode.jsonc` 注册调试工具：
 
-## Credits
+```jsonc
+"permission": {
+  "dev_router_status": "allow",
+  "dev_router_mode": "ask"
+}
+```
 
-Ported from [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-(MIT). Acknowledgments:
+## 使用
 
-- [xiaobright/modeltest](https://github.com/xiaobright/modeltest) — Project2 /
-  V4.1b evaluation methodology
-- [xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)
-  — two-phase anchoring mechanism
+- **自动路由**（opt-in）：`OPENCODE_ROUTER_AUTO=1` 启动，首条消息分类选 band；
+  寒暄/问候不路由；第二条起恢复 build 全能力。
+- **手动锁**：`dev_router_mode spec|react|weak|standard|auto` 强制某模式，
+  persona 每轮注入；Tab 切其他 agent 即解锁。
+- **数字接口**：`dev_router_mode 42` → react、`0.3` → mixed、`weak` → weak。
+- **近场引导**：`OPENCODE_ROUTER_GUIDE=1` 启用，弱带会话每条用户消息后按任务
+  复杂度注入深/浅引导。
+
+### 工具
+
+- **`dev_router_status`** — 插件状态、版本、band、agent、模型、模式锁、熔断。只读。
+- **`dev_router_mode <mode>`** — 手动锁定/解锁推理模式。
+- **`dev_mode_subagent <mode> <task>`** — 独立会话模式隔离，`opencode run` 子进程。
+
+### 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `OPENCODE_ROUTER_AUTO` | 关 | `1` 启用首条消息自动路由 |
+| `OPENCODE_ROUTER_ENABLED` | 开 | `0` 完全禁用插件 |
+| `OPENCODE_ROUTER_ALLOW_VERSION` | — | 金丝雀强制放行 |
+| `OPENCODE_ROUTER_CRASH_TEST` | 关 | `1` 崩溃注入测试 |
+| `OPENCODE_ROUTER_WEAK_ANCHOR` | 关 | `1` 恢复旧 WEAK_FLASH 锚行 |
+| `OPENCODE_ROUTER_GUIDE` | 关 | `1` 启用近场引导 |
+
+## 兼容性与风险
+
+- **opencode 1.18.18**（V1 插件 API）。版本不匹配时插件自动禁用（金丝雀），
+  可用 `OPENCODE_ROUTER_ALLOW_VERSION` 强制放行。
+- **模型门控**：仅 DeepSeek V4（`deepseek` + `v4`）模型获得测试过的 persona 分支
+  （Pro→WEAK_PRO / Flash→WEAK_FLASH）；其余模型使用通用 persona，不注入专属锚。
+  装了这个插件**不会**改变非 DeepSeek V4 模型的行为。
+- **卸载/回滚**：删除这两个文件即完全还原，不留状态：
+
+  ```sh
+  rm ~/.config/opencode/agents/spec.md ~/.config/opencode/agents/standard.md
+  rm ~/.config/opencode/plugins/routing-suite.ts
+  ```
+
+- **与 opencode 自带 agent 的区别**：自带 `build`/`plan` 是静态权限预设；本项目
+  会按任务类型**自动切换** persona 与首轮工具面，且只影响会话首轮路由与注入。
+
+## 为什么这样设计
+
+要点（详细见 [docs/PORTING.md](./docs/PORTING.md) 与 [docs/RATIONALE.md](./docs/RATIONALE.md)）：
+
+- 模型沿 react↔spec 轴行为坍缩为三个稳定区，不是连续谱——三带量化是诚实接口。
+- persona 是主导触发器，模型在首请求路径提交——所以必须在首个请求前路由。
+- 模型不能自路由——模式选择必须来自外部，本插件即外部路由器。
+- 弱带最优 persona **因模型而异**（Pro 无锚 / Flash 带锚），插件自动选择。
+- 首条消息路由后恢复完整能力，什么都不永久放弃。
+
+## 移植内容
+
+对齐上游 [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
+**`9727510`**（2026-08-18）。行为链：分类 → `personaFor(mode, modelId)` → 首轮
+核心工具面 → 首个 tool/call 后恢复全目录 → 近场引导（弱带）。
+
+平台差异（Cordis → opencode hooks、工具映射、权限系统）、结构差异、未移植的
+DSH 专用组件：见 [docs/PORTING.md](./docs/PORTING.md)。
+
+## 验证
+
+```sh
+npm run check && node --test
+```
+
+手动清单（安装并重启后）：
+
+- [ ] Tab 切到 `spec`（写/编辑前确认）与 `standard`（仅 bash+edit）。
+- [ ] `dev_router_status` 输出正常（band、agent、model）。
+- [ ] `OPENCODE_ROUTER_AUTO=1`："写一个 python 脚本" → react；"重构这个模块" → spec；"你好" → 不路由。
+- [ ] `dev_router_mode 42` → react；`0.3` → mixed；`weak` → weak；`standard` → RL 窄面。
+- [ ] 崩溃注入：`OPENCODE_ROUTER_CRASH_TEST=1`，3 次后自禁用。
+- [ ] `OPENCODE_ROUTER_WEAK_ANCHOR=1` → WEAK_FLASH 含 "Think deeply first"。
+- [ ] `OPENCODE_ROUTER_GUIDE=1` + weak 带任务 → 控制台可见引导注入日志。
+- [ ] 删除文件 → 行为与未安装一致。
+
+## 从 v0.2.0 迁移
+
+| 变更 | 影响 | 操作 |
+|---|---|---|
+| `standard` agent 可用 | `agents/standard.md` 已添加 | 复制到 `~/.config/opencode/agents/` |
+| `dev_router_mode standard` 可用 | RL 窄面模式 | 用 `dev_router_mode standard` 激活 |
+| persona 改为每轮注入 | 每次 LLM 请求的 system 都含 persona | 无需操作（幂等、缓存中性） |
+| `OPENCODE_ROUTER_RESTORE_AGENT` 移除 | 不再需要 | 从环境变量删除（如有设置） |
+
+## 安全
+
+- 所有 hook try/catch：**fail-open**（故障记录，消息不动）。
+- 连续 3 次故障后自我禁用，清空状态。
+- 按会话隔离的 `Map`——不共享模式锁。
+- 不发网络请求，无遥测。
+
+## 实证与归属
+
+- **实测数据**：三带（21 点探针 n=2）、WEAK_PRO/FLASH 分支（P11/P24/P23）、
+  近场引导（P30）。编号原文见上游仓库 `docs/paper.md` / `docs/experiments.md`。
+  人话版：每次切换都选对配置（"100% 路由"）；Flash 单任务完成率 100%（P23）。
+- **移植自** [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)（MIT）。
+- 评测方法：[xiaobright/modeltest](https://github.com/xiaobright/modeltest)（Project2 / V4.1b）。
+- 锚定机制：[xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)（MIT）。
 
 ## License
 
-MIT. The classifier and personas are derived from the yjh051108/dsh-routing-suite
-`router-standard` preset; the original copyright and MIT notice are retained
-in [`NOTICE`](./NOTICE).
+MIT。分类器与 persona 派生自 yjh051108/dsh-routing-suite 的 `router-standard`
+preset；原始版权与 MIT 声明见 [`NOTICE`](./NOTICE)。
