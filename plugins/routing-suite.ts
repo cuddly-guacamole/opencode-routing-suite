@@ -5,58 +5,42 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /**
- * routing-suite —— dsh-routing-suite 的 opencode 实现（V1 API，pin 1.18.18）。
+ * routing-suite v0.3.0 — dsh-router-standard @9727510 的 opencode 实现。
  *
- * 双层架构（v0.2.0 重构，D2 计划书 §4）：
- *   1. chat.message 分流：首条消息（count==0）→ CHAT_RE 寒暄检测（命中→
- *      band=none 不干预）→ classifyTask 三带 → 锚定 agent=spec + 写 pending；
- *      手动锁每轮改 agent + 写 pending；用户 Tab 切非锁 agent → 清锁。
- *   2. transform 注入（experimental.chat.system.transform）：读 pending →
- *      band=standard 替换 system[0] 为 RL 句+精简安全指令；band=spec/react/weak
- *      尾部追加 persona（spec 幂等：system 已含 SPEC_PERSONA 则跳过）；title
- *      生成跳过（不消费 pending）；无 pending 不动 system（恢复 build 后自然完整）。
+ * 基线：组件仓库 dsh-router-standard origin/main = 9727510（2026-08-18，
+ * "v0.1.1 restore"：放弃 RL 接口还原，统一行为链）。
  *
- * 三带（router-standard 实测）：spec [0,0.15] 稳定 / transition 带回避 /
- * react [0.5,1] 稳定；mixed 永不输出。分类器移植 mode-boost classifyTask
- * （扩展版正则，含寒暄检测 isChatTask）：react 关键词胜 → react；spec 胜 →
- * spec；平局 → weak（模型内部自路由）。
+ * 行为链（9727510 语义）：
+ *   1. chat.message：首条分类（三带 + weak，寒暄让位）→ 锚定 agent=spec；
+ *      手动锁每轮改 agent；Tab 切非锁 agent 清锁。
+ *   2. system.transform（每轮幂等）：读 state.band → personaFor(band, model) →
+ *      幂等尾附（已含 persona 则跳过）；spec 幂等兜底（spec.md 已含则跳过）。
+ *   3. 近场引导（messages.transform，每轮弱带尾插 user 引导，OPENCODE_ROUTER_GUIDE=1）。
+ *   4. dev_mode_subagent（opencode run 子进程，独立会话执行）。
  *
- * 手动锁 vs 自动：
- *   - 手动锁（dev_router_mode spec|react|weak|standard）：持续生效，每条消息
- *     按锁模式处理（persona 锁→agent=spec；RL 锁→agent=standard）；用户 Tab
- *     切换到非锁对应 agent 即清锁。
- *   - 自动（OPENCODE_ROUTER_AUTO=1）：仅首条消息（count=0）分类锚定 agent=spec，
- *     第二条起恢复 build（消息级 agent 改写只对本回合生效，实证 2026-08-15）。
- *
- * 防御层：
- *   - 全 hook try/catch，fail-open（异常捕获记录，不破坏主链路）
- *   - 连续 3 次异常自我禁用（清空状态）并 console.error 可见
- *   - OPENCODE_ROUTER_ENABLED=0 总开关
- *   - 状态 Map<sessionID> 隔离，不跨会话
- *   - 版本金丝雀：探测 npm 全局 opencode-ai 版本，失配/探测失败默认禁用
- *   - OPENCODE_ROUTER_CRASH_TEST=1 崩溃注入（chat.message 与 transform 双点，
- *     人为异常验证熔断，GUI 不崩）
+ * v0.3.0 相对 v0.2.0 的变化：
+ *   - 删除：standard/RL 线（SAFETY_RULES/RL_SAFETY/standard band）。
+ *   - 新增：personaFor 模型分支（Pro→WEAK_PRO / Flash→WEAK_FLASH）。
+ *   - 新增：parseMode 数字接口（0-100/0.0-1.0/band 名/mixed）。
+ *   - 新增：OPENCODE_ROUTER_WEAK_ANCHOR 回退开关（恢复旧 WEAK_FLASH 锚）。
+ *   - 变更：每轮幂等注入（去掉 pending 机制，检查 system 是否已含 persona）。
+ *   - 变更：WEAK_FLASH 按 9727510 更新（去 "Think deeply first, then produce."）。
  *
  * 配置（环境变量）：
- *   OPENCODE_ROUTER_ENABLED    —— 0 完全禁用（无需删文件）
- *   OPENCODE_ROUTER_AUTO       —— 1 启用首条消息自动路由（默认关闭，opt-in）
- *   OPENCODE_ROUTER_RESTORE_AGENT —— 历史兼容保留：agent 改写仅本回合生效，
- *     恢复 build 自动发生，本变量已无实际作用（预研实测，不删）
- *   OPENCODE_ROUTER_ALLOW_VERSION —— 金丝雀强制放行的版本号（如升级后确认兼容）
- *   OPENCODE_ROUTER_CRASH_TEST —— 1 崩溃注入测试
+ *   OPENCODE_ROUTER_ENABLED       —— 0 完全禁用
+ *   OPENCODE_ROUTER_AUTO          —— 1 启用首条消息自动路由（默认 off）
+ *   OPENCODE_ROUTER_ALLOW_VERSION —— 金丝雀强制放行
+ *   OPENCODE_ROUTER_CRASH_TEST    —— 1 崩溃注入测试
+ *   OPENCODE_ROUTER_WEAK_ANCHOR   —— 1 恢复旧 WEAK_FLASH 锚行（P23 回退开关）
+ *   OPENCODE_ROUTER_GUIDE         —— 1 启用近场引导（默认 off）
  */
 
-const PIN_VERSION = "1.18.18"
-const DEFAULT_RESTORE_AGENT = "build"
-const MAX_FAULTS = 3
+// ═══════════════════════════════════════════════════════════════════════
+// 核心层（与平台无关，纯函数，可单测）
+// V2 兼容性：核心层零 opencode import，V2 迁移仅需重写下方适配层 hook
+// ═══════════════════════════════════════════════════════════════════════
 
-const HARD_DISABLED = process.env.OPENCODE_ROUTER_ENABLED === "0"
-const AUTO = process.env.OPENCODE_ROUTER_AUTO === "1"
-const CRASH_TEST = process.env.OPENCODE_ROUTER_CRASH_TEST === "1"
-// 历史兼容：agent 改写仅本回合生效，恢复 build 自动发生，本变量已无实际作用（§3.6）
-const RESTORE_AGENT = process.env.OPENCODE_ROUTER_RESTORE_AGENT?.trim() || DEFAULT_RESTORE_AGENT
-
-// —— 注入文本常量（D2 计划书 §2，T0 核对 14/14 与上游逐字一致，禁止"顺手优化"） ——
+// ── 注入文本常量（禁止凭记忆改写，以上游 dsh-router-standard @9727510 为准） ──
 
 const SPEC_PERSONA = "You are a helpful software engineer assistant."
 
@@ -67,24 +51,23 @@ const REACT_PERSONA =
   "harnesses, scaffolding, or ceremony the user did not ask for. " +
   "Finish with a usable deliverable and a short summary."
 
+/** WEAK_PRO：Pro 模型最优弱 persona（w6c，无锚，P24 100% 路由） */
+const WEAK_PRO =
+  "You are a helpful software engineer assistant.\n" +
+  "Before acting, decide the task type (build or fix) and adopt the matching " +
+  "style: build → hands-on production; fix → inspect-and-plan."
+
+/** WEAK_FLASH：Flash 模型最优弱 persona（w7，+recall/anti-runaway 锚，P23 100% 单任务完成） */
 const WEAK_FLASH =
   "You are a helpful assistant.\n" +
   "Before acting, decide the task type (build or fix) and adopt the matching " +
   "style: build → hands-on production; fix → inspect-and-plan.\n" +
-  "Before acting, briefly review what you have already done in this session and continue from where you left off; do not repeat completed steps. Do not run environment checks (echo, whoami, uname, node --version, date) or exhaustive grep/glob scans.\n" +
-  "Think deeply first, then produce."
+  "Before acting, briefly review what you have already done in this session and continue from where you left off; do not repeat completed steps. Do not run environment checks (echo, whoami, uname, node --version, date) or exhaustive grep/glob scans."
 
-// 精简安全指令（D2 拟定，非上游原文；RL 全剥后注入的安全底线，联调可微调需同步 requirements）
-const SAFETY_RULES =
-  "Safety: before destructive operations (delete, recursive delete, format), " +
-  "verify reversibility and the exact path — prefer reversible actions; never touch drive roots, " +
-  "system directories, or the home root without explicit confirmation. " +
-  "If a command is blocked by permissions, ask the user to run it manually; do not silently skip or bypass. " +
-  "Never expose or commit secrets or keys."
+/** 回退开关：旧 WEAK_FLASH 含 deep-first 锚（v0.2.0 行为） */
+const WEAK_FLASH_ANCHORED = WEAK_FLASH + "\nThink deeply first, then produce."
 
-const RL_SAFETY = SPEC_PERSONA + "\n" + SAFETY_RULES
-
-// —— 分类器（mode-boost 扩展版，§2.5/2.6/2.7） ——
+// ── 分类器（mode-boost 扩展版正则） ──
 
 const CHAT_RE =
   /^(你好|您好|hello|hi|hey|嗨|哈喽|在吗|谢谢|感谢|thanks|thank you|早上好|下午好|晚上好|嗯|好|ok|okay|yes|no|嗯嗯|好的)[!。.!？?~～]*$/i
@@ -92,6 +75,21 @@ const REACT_RE =
   /(开发|创建|写一个|写|生成|从零|做|做一个|做个|游戏|网页|网站|构建|新项目|搭建|实现|做出|上线|落地|脚本|工具|应用|build|create|develop|generate|implement|write a|write an|build a|make a|new project)/gi
 const SPEC_RE =
   /(修复|修一下|调试|重构|维护|排查|报错|出错|崩溃|优化|审查|review|fix|debug|refactor|maintain|repair|broken|break|为什么|异常|故障|迁移|升级|兼容)/gi
+const COMPLEX_RE =
+  /(重构|架构|全面|详细|设计|系统|优化|分析|survey|overview|architecture|refactor|comprehensive|detailed|design|system|optimize|analyze)/i
+
+function countHits(regex: RegExp, text: string): number {
+  return [...text.matchAll(regex)].length
+}
+
+/** 三带量化分类：react>spec→react；spec>react→spec；平局→weak */
+function classifyTask(text: string): TaskBand {
+  const react = countHits(REACT_RE, text)
+  const spec = countHits(SPEC_RE, text)
+  if (react > spec) return "react"
+  if (spec > react) return "spec"
+  return "weak"
+}
 
 /** 寒暄/空消息/短句无关键词 → true（会话让位，不路由） */
 function isChatTask(text: unknown): boolean {
@@ -100,33 +98,110 @@ function isChatTask(text: unknown): boolean {
   if (t.length === 0) return true
   if (CHAT_RE.test(t)) return true
   if (t.length > 24) return false
-  return !t.match(REACT_RE) && !t.match(SPEC_RE) // 短消息无任务关键词 → 寒暄
+  return !t.match(REACT_RE) && !t.match(SPEC_RE)
 }
 
-// —— 会话状态模型（契约 3.2/3.3，唯一事实源） ——
+/** 判断模型是否 Flash 系列（大小写不敏感） */
+function isFlashModel(modelId: unknown): boolean {
+  return typeof modelId === "string" && /flash/i.test(modelId)
+}
 
-type Band = "spec" | "react" | "weak" | "standard" | "none"
-type TaskBand = Extract<Band, "spec" | "react" | "weak">
+/** 深度自适应：长消息或含架构关键词 → 复杂任务 */
+function isComplexTask(text: unknown): boolean {
+  return typeof text === "string" && (text.length > 120 || COMPLEX_RE.test(text))
+}
+
+// ── persona 按模型选择（9727510 核心机制） ──
+
+const WEAK_ANCHOR = process.env.OPENCODE_ROUTER_WEAK_ANCHOR === "1"
+
+function personaFor(band: string, modelId: unknown): string {
+  switch (band) {
+    case "spec": return SPEC_PERSONA
+    case "react": return REACT_PERSONA
+    case "weak":
+      if (isFlashModel(modelId)) {
+        return WEAK_ANCHOR ? WEAK_FLASH_ANCHORED : WEAK_FLASH
+      }
+      return WEAK_PRO
+    default: return SPEC_PERSONA
+  }
+}
+
+// ── 数字模式解析（parseMode，量化三带） ──
+
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v))
+}
+
+function parseMode(token: string | null | undefined): number | string | null {
+  if (token === undefined || token === null) return null
+  const t = token.trim().toLowerCase()
+  if (t === "auto") return "auto"
+  if (t === "weak" || t === "router") return "weak"
+  if (t === "spec" || t === "spec-lean") return 0
+  if (t === "balanced" || t === "mixed") return 0.3
+  if (t === "react" || t === "react-lean") return 1
+  const n = Number(t)
+  if (!Number.isFinite(n)) return null
+  if (t.includes(".")) return clamp01(n)
+  return clamp01(n / 100)
+}
+
+function bandOf(mode: number | string): string {
+  if (mode === "weak") return "weak"
+  const m = typeof mode === "number" ? clamp01(mode) : 0.5
+  if (m < 0.2) return "spec"
+  if (m < 0.5) return "mixed"
+  return "react"
+}
+
+function bandFor(mode: number | string): string {
+  const b = bandOf(mode)
+  return b === "mixed" ? "mixed" : b
+}
+
+function fmtMode(mode: number | string): string {
+  return typeof mode === "string" ? mode : mode.toFixed(2)
+}
+
+// ── 近场引导文本（9727510，OPENCODE_ROUTER_GUIDE=1 启用） ──
+
+const GUIDE_WEAK =
+  "\nRouter: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Think deeply first, then commit and act."
+
+const GUIDE_DEEP =
+  "\nRouter: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Think deeply about the architecture, edge cases, and integration points. Do not spend reasoning on the environment or tooling. Produce when your information is complete. End each reasoning block with a decision or an information need."
+
+// ═══════════════════════════════════════════════════════════════════════
+// V1 适配层（hook 注册，opencode 1.18.18）
+// V2 迁移映射：chat.message→session.hook("context") / system.transform→event.system /
+// messages.transform→event.messages / tool→tool.transform
+// ═══════════════════════════════════════════════════════════════════════
+
+const PIN_VERSION = "1.18.18"
+const MAX_FAULTS = 3
+
+const HARD_DISABLED = process.env.OPENCODE_ROUTER_ENABLED === "0"
+const AUTO = process.env.OPENCODE_ROUTER_AUTO === "1"
+const CRASH_TEST = process.env.OPENCODE_ROUTER_CRASH_TEST === "1"
+const GUIDE_ENABLED = process.env.OPENCODE_ROUTER_GUIDE === "1"
+
+type Band = "spec" | "react" | "weak" | "none"
+type TaskBand = "spec" | "react" | "weak"
 
 type SessionState = {
-  band?: Band // routing.band：首条分类结果（手动锁=锁模式）
-  handled?: boolean // routing.handled：首条已处理标志
-  persona?: string // routing.persona：锁定 persona 全文
-  pending?: boolean // routing.pending：待注入标记（chat.message 写 / transform 读+清）
-  manual?: boolean // 手动锁标志
-  lockMode?: Band // 手动锁模式（spec/react/weak/standard）
+  band?: Band
+  handled?: boolean
+  manual?: boolean
+  lockMode?: Band
+  lastGuidedMsgID?: string // 近场引导去重：追踪已注入的用户消息 ID
 }
 
-const states = new Map<string, SessionState>() // 进程内，会话隔离，重启清空
-
-/** persona 锁统一锚 spec；RL 锁锚 standard */
-const lockAgent = (m: Band): string => (m === "standard" ? "standard" : "spec")
-
-// —— 熔断与金丝雀 ——
+const states = new Map<string, SessionState>()
 
 let faultCount = 0
 let selfDisabled = false
-
 let versionDetected: string | null = null
 let versionOk = false
 
@@ -151,21 +226,6 @@ function trip(where: string, err: unknown) {
       `[routing-suite] 连续 ${MAX_FAULTS} 次异常，已自我禁用（恢复：删插件文件、检查 opencode 版本或重启）`,
     )
   }
-}
-
-/** 三带量化分类：react>spec→react；spec>react→spec；平局→weak */
-function classifyTask(text: string): TaskBand {
-  const react = (text.match(REACT_RE) || []).length
-  const spec = (text.match(SPEC_RE) || []).length
-  if (react > spec) return "react"
-  if (spec > react) return "spec"
-  return "weak"
-}
-
-const PERSONA_BY_BAND: Record<TaskBand, string> = {
-  spec: SPEC_PERSONA,
-  react: REACT_PERSONA,
-  weak: WEAK_FLASH,
 }
 
 function extractUserText(output: any): string {
@@ -217,6 +277,7 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
   }
 
   return {
+    // ── chat.message：分类 + 锚定 + 手动锁 ──
     "chat.message": async (input, output) => {
       if (selfDisabled) return
       try {
@@ -227,131 +288,150 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
         const agent = ((output?.message as { info?: { agent?: string } } | undefined)?.info?.agent ??
           (output?.message as { agent?: string } | undefined)?.agent) as string | undefined
         const count = await messageCount(client, sessionID)
-        if (count === null) return // 查询失败 → 不干预（宁可错过路由，不破坏消息）
+        if (count === null) return
 
-        // A. 手动锁：每轮改 agent + 写 pending；用户 Tab 切非锁对应 agent → 清锁（尊重用户）
-        // 注意：build 回落不触发清锁（CLI 多轮中消息级 agent 改写只对本回合生效，agent 每轮
-        // 回落 build——计划书伪码的补充：build 视为系统回落而非用户切换，TUI 中 Tab 到其他
-        // 非锁 agent（非 build）仍清锁）
+        // A. 手动锁：每轮改 agent；Tab 切非锁 agent → 清锁
         if (state?.manual) {
-          if (count > 0 && agent && agent !== "build" && agent !== lockAgent(state.lockMode ?? "spec")) {
+          if (count > 0 && agent && agent !== "build" && agent !== "spec") {
             states.delete(sessionID)
-            console.debug(
-              `[routing-suite] session ${sessionID} 用户切换 agent=${agent}，清除模式锁`,
-            )
+            console.debug(`[routing-suite] session ${sessionID} 用户切换 agent=${agent}，清除模式锁`)
             return
           }
-          setAgent(output, lockAgent(state.lockMode ?? "spec"))
-          // band 跟随锁模式：transform 按 band 注入（T6 验收：锁后 status 显示 band=锁模式）
-          states.set(sessionID, { ...state, band: state.lockMode, pending: true })
-          console.debug(
-            `[routing-suite] session ${sessionID} 手动锁 ${state.lockMode} 生效，agent=${lockAgent(state.lockMode ?? "spec")}，写 pending`,
-          )
+          setAgent(output, "spec")
+          states.set(sessionID, { ...state, band: state.lockMode })
+          console.debug(`[routing-suite] session ${sessionID} 手动锁 ${state.lockMode} 生效`)
           return
         }
 
-        // B. 自动路由（opt-in，AUTO=1）仅首条；非首条 → return（无 pending 时 transform 不动 system）
+        // B. 自动路由（opt-in）仅首条
         if (!AUTO) return
         if (count !== 0) return
-        if (agent && agent !== "build") return // 用户已手动选 agent 不干预
+        if (agent && agent !== "build") return
 
         const text = extractUserText(output)
 
-        // B1. 寒暄让位（契约 3.2 band=none）
         if (isChatTask(text)) {
-          states.set(sessionID, { band: "none", handled: true }) // 不写 pending、不改 agent
-          console.log(`[routing-suite] session ${sessionID} 寒暄命中，band=none，不路由`)
+          states.set(sessionID, { band: "none", handled: true })
+          console.log(`[routing-suite] session ${sessionID} 寒暄命中，band=none`)
           return
         }
 
-        // B2. 三带分类 → 锚定 spec + 写 pending（自动路由=仅首条写 pending）
         const cls = classifyTask(text)
-        states.set(sessionID, {
-          band: cls,
-          persona: PERSONA_BY_BAND[cls],
-          handled: true,
-          pending: true,
-        })
+        states.set(sessionID, { band: cls, handled: true })
         setAgent(output, "spec")
-        console.log(
-          `[routing-suite] session ${sessionID} 首条消息分类=${cls}，锚定 agent=spec，待注入 persona`,
-        )
+        console.log(`[routing-suite] session ${sessionID} 首条分类=${cls}，锚定 agent=spec`)
       } catch (err) {
         trip("chat.message", err)
       }
     },
 
+    // ── system.transform：每轮幂等注入 persona ──
     "experimental.chat.system.transform": async (input, output) => {
       if (selfDisabled) return
       try {
-        if (CRASH_TEST) throw new Error("crash injection (transform, OPENCODE_ROUTER_CRASH_TEST=1)")
+        if (CRASH_TEST) throw new Error("crash injection (transform)")
 
         const sessionID = input.sessionID
         if (!sessionID) return
         const sys = output.system?.[0]
         if (!sys) return
 
-        // title 生成跳过（同 sessionID 触发，内容判断）——不读不消费 pending（宁延迟不丢失）
-        if (sys.startsWith("You are a title generator")) {
-          console.debug(`[routing-suite] session ${sessionID} transform 跳过（title 生成，不消费 pending）`)
-          return
-        }
+        if (sys.startsWith("You are a title generator")) return
 
         const state = states.get(sessionID)
-        if (!state?.pending || !state.band) {
-          console.debug(`[routing-suite] session ${sessionID} transform 跳过（无 pending，system 自然完整）`)
+        const band = state?.band
+        if (!band || band === "none") return
+
+        const modelId = (input as any).model?.id ?? (input as any).model
+        const persona = personaFor(band, modelId)
+
+        // 幂等：已含 persona 则跳过
+        if (sys.includes(persona)) {
+          console.debug(`[routing-suite] session ${sessionID} transform 跳过（已含 persona）`)
           return
         }
 
-        const band = state.band
-        if (band === "standard") {
-          output.system[0] = RL_SAFETY // 整体替换：RL 句 + 精简安全指令
-          console.log(`[routing-suite] session ${sessionID} transform 注入 band=standard（RL 句+安全指令）`)
-        } else if (band === "spec" && !sys.includes(SPEC_PERSONA)) {
-          output.system[0] = sys + "\n\n" + SPEC_PERSONA // 幂等兜底（spec.md 已含则跳过）
-          console.log(`[routing-suite] session ${sessionID} transform 注入 band=spec（幂等兜底）`)
-        } else if (band === "react") {
-          output.system[0] = sys + "\n\n" + REACT_PERSONA // 完整 system 保留 + persona 尾附
-          console.log(`[routing-suite] session ${sessionID} transform 注入 band=react`)
-        } else if (band === "weak") {
-          output.system[0] = sys + "\n\n" + WEAK_FLASH
-          console.log(`[routing-suite] session ${sessionID} transform 注入 band=weak`)
-        } else if (band === "spec") {
-          // 幂等：system 已含 SPEC_PERSONA（spec.md 兜底提供），跳过追加（§3.2）
-          console.debug(
-            `[routing-suite] session ${sessionID} transform 跳过（spec 已含 SPEC_PERSONA，幂等）`,
-          )
-        } else {
-          console.debug(`[routing-suite] session ${sessionID} transform 跳过（band=none）`)
-        }
-        state.pending = false // 消费标记；缓存中性（不改 message/不写 cache）
+        output.system[0] = sys + "\n\n" + persona
+        console.log(`[routing-suite] session ${sessionID} transform 注入 band=${band}`)
       } catch (err) {
         trip("experimental.chat.system.transform", err)
       }
     },
 
+    // ── messages.transform：近场引导（weak 带，深度自适应） ──
+    // 每请求触发，output.messages 有完整 info（含 sessionID）。
+    // 追踪 lastGuidedMsgID 防重复：工具循环中同一用户消息触发多次 transform，
+    // 只在首次注入 guide；guide 不持久化到会话历史（仅当次请求可见）。
+    "experimental.chat.messages.transform": async (_input, output) => {
+      if (selfDisabled) return
+      if (!GUIDE_ENABLED) return // OPENCODE_ROUTER_GUIDE=1 才启用近场引导
+      try {
+        if (CRASH_TEST) throw new Error("crash injection (messages.transform)")
+
+        // 找最后一条真实用户消息（非 guide 消息）
+        const msgs = output?.messages
+        if (!msgs || msgs.length === 0) return
+        const lastUserMsg = [...msgs].reverse().find(
+          (m: any) => m?.info?.role === "user" && !m?.info?.id?.startsWith("guide-"),
+        )
+        if (!lastUserMsg) return
+
+        const sessionID = lastUserMsg.info?.sessionID
+        if (!sessionID) return
+        const state = states.get(sessionID)
+        if (!state?.band || state.band === "none") return
+        if (state.band !== "weak") return // 近场引导仅 weak 带
+
+        const msgID = lastUserMsg.info.id
+        if (state.lastGuidedMsgID === msgID) return // 去重：已注入
+
+        // 提取用户文本
+        const userText = (lastUserMsg.parts ?? [])
+          .map((p: any) => (p?.type === "text" ? p.text : ""))
+          .join("\n")
+        if (!userText.trim()) return
+
+        const guide = isComplexTask(userText) ? GUIDE_DEEP : GUIDE_WEAK
+
+        // 尾插 user 角色引导消息
+        msgs.push({
+          info: {
+            role: "user",
+            id: `guide-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            sessionID,
+            time: { created: Date.now() },
+          } as any,
+          parts: [{ type: "text", text: guide }] as any,
+        })
+
+        state.lastGuidedMsgID = msgID
+        console.debug(`[routing-suite] session ${sessionID} 近场引导注入（${isComplexTask(userText) ? "DEEP" : "WEAK"}）`)
+      } catch (err) {
+        trip("experimental.chat.messages.transform", err)
+      }
+    },
+
+    // ── 自定义工具 ──
     tool: {
       dev_router_status: tool({
         description:
-          "显示 dsh-routing-suite 路由状态：插件启用状态、opencode 版本金丝雀、自动路由开关、本会话 band/persona/pending、模式锁、熔断状态。只读，无副作用。",
+          "显示 routing-suite v0.3.0 路由状态：插件启用、版本金丝雀、自动路由、本会话 band/model、模式锁、熔断。只读。",
         args: {},
         async execute(_args, ctx) {
           const s = states.get(ctx.sessionID)
-          const personaLabel =
-            s?.band === "standard" ? "RL+SAFETY" : s?.band === "none" ? "none" : s?.band ? s.band.toUpperCase() : "none"
           return {
-            title: "routing-suite 状态",
+            title: "routing-suite v0.3.0 状态",
             output: [
-              `插件: ${selfDisabled ? "已自我禁用（熔断 " + faultCount + "/" + MAX_FAULTS + "）" : "启用"}`,
-              `版本金丝雀: ${versionOk ? `pin ${PIN_VERSION} ✓` : `检测 ${versionDetected ?? "失败"}，插件已禁用（金丝雀）`}`,
-              `自动路由: ${AUTO ? "ON (OPENCODE_ROUTER_AUTO=1)" : "off（默认 opt-in，未开启）"}`,
-              `分类器: ${AUTO ? "启用（关键词计数三带）" : "off（自动路由关闭）"}`,
+              `插件: ${selfDisabled ? "已禁用（熔断 " + faultCount + "/" + MAX_FAULTS + "）" : "启用"}`,
+              `版本: v0.3.0（基线9727510）`,
+              `金丝雀: ${versionOk ? `pin ${PIN_VERSION} ✓` : `检测 ${versionDetected ?? "失败"}，禁用`}`,
+              `自动路由: ${AUTO ? "ON" : "off"}`,
               `本会话 band: ${s?.band ?? "未分类"}`,
-              `本会话 persona: ${personaLabel}`,
-              `注入 pending: ${s?.pending ?? false}`,
               `本会话 agent: ${ctx.agent}`,
-              `本会话模式锁: ${s?.manual ? `${s.lockMode}（手动，持续生效）` : "auto（未锁）"}`,
-              `熔断: ${faultCount}/3${selfDisabled ? " — 已禁用" : ""}`,
+              `模式锁: ${s?.manual ? `${s.lockMode}（手动）` : "auto"}`,
+              `WEAK_ANCHOR: ${WEAK_ANCHOR ? "ON（旧锚恢复）" : "off"}`,
+              `GUIDE: ${GUIDE_ENABLED ? "ON" : "off（OPENCODE_ROUTER_GUIDE=1 启用）"}`,
+              `熔断: ${faultCount}/${MAX_FAULTS}`,
             ].join("\n"),
           }
         },
@@ -359,19 +439,47 @@ export const RoutingSuitePlugin: Plugin = async ({ client }) => {
 
       dev_router_mode: tool({
         description:
-          "手动锁/解锁本会话推理模式。spec=计划型（read-first 工具面，写需确认）；react=执行型（doer，全工具）；weak=弱模式（窄面四工具）；standard=RL 模式（system 替换为 RL 句+精简安全指令）；auto=解锁恢复自动路由。手动锁持续生效，Tab 切换其他 agent 即自动解锁。",
-        args: { mode: z.enum(["spec", "react", "weak", "standard", "auto"]) },
+          "手动锁/解锁推理模式。spec=计划型；react=执行型；weak=弱模式（按模型选WEAK_PRO/WEAK_FLASH）；auto=解锁。接受 band 名、0-100、0.0-1.0、mixed。",
+        args: { mode: z.string().describe("spec/react/weak/auto 或 0-100 或 0.0-1.0 或 mixed") },
         async execute(args, ctx) {
-          if (args.mode === "auto") {
+          const parsed = parseMode(args.mode)
+          if (parsed === null) return `无效模式 "${args.mode}"：使用 spec/react/weak/auto、0-100、0.0-1.0、mixed`
+          if (parsed === "auto") {
             states.delete(ctx.sessionID)
-            return `已解锁本会话（当前 agent: ${ctx.agent}）。自动路由 ${AUTO ? "开启中" : "未开启（OPENCODE_ROUTER_AUTO 未设）"}。`
+            return `已解锁（agent: ${ctx.agent}）。自动路由 ${AUTO ? "开启" : "未开启"}。`
           }
-          states.set(ctx.sessionID, { band: args.mode, manual: true, lockMode: args.mode })
-          const effect =
-            args.mode === "standard"
-              ? "system 替换为 RL 句+精简安全指令"
-              : `${args.mode} persona 尾附`
-          return `已锁定 ${args.mode} 模式（手动）。下一条消息起按 ${args.mode} 处理（${effect}）；Tab 切换到其他 agent 或再次调用本工具选 auto 即解锁。`
+          const band: Band = typeof parsed === "string" ? parsed as Band : bandOf(parsed) as Band
+          states.set(ctx.sessionID, { band, manual: true, lockMode: band })
+          return `已锁定 ${band} 模式。Tab 切其他 agent 或再次调用选 auto 即解锁。`
+        },
+      }),
+
+      // ── dev_mode_subagent：opencode run 子进程，模式隔离上下文 ──
+      // opencode run 加载插件、无递归、agent 覆盖可行。
+      // 注意：子进程独立会话，插件会自动分类任务并注入匹配 persona。
+      dev_mode_subagent: tool({
+        description:
+          "在独立会话中执行任务（模式隔离）。子进程加载插件后自动分类任务并注入匹配 persona。返回执行结果文本。",
+        args: {
+          mode: z.string().describe("目标模式 spec/react/weak（仅记录，实际由子进程分类器决定）"),
+          task: z.string().describe("交给子代理的任务"),
+          maxTokens: z.number().optional().describe("输出上限（默认 1024，暂未限制）"),
+        },
+        async execute(args) {
+          const parsed = parseMode(args.mode)
+          if (parsed === null || parsed === "auto") return `无效模式 "${args.mode}"`
+          const band = typeof parsed === "string" ? parsed : bandFor(parsed)
+
+          try {
+            const result = execSync(
+              `opencode run --agent spec ${JSON.stringify(String(args.task))}`,
+              { encoding: "utf8", timeout: 60000, stdio: ["pipe", "pipe", "pipe"] },
+            )
+            const head = result.slice(0, 3000)
+            return `[mode-subagent ${band} | ${result.length} chars]\n${head}${result.length > 3000 ? "\n…(truncated)" : ""}`
+          } catch (err: any) {
+            return `subagent error: ${err?.message ?? String(err)}`
+          }
         },
       }),
     },

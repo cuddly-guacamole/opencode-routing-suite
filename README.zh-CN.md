@@ -1,14 +1,16 @@
-# opencode-routing-suite
+# opencode-routing-suite v0.3.0
 
 [English](./README.md)
 
-面向 [opencode](https://opencode.ai) 的任务感知推理模式路由套件：两个 primary
-agent —— **spec**（计划型，面向修复/维护任务）与 **standard**（RL 窄面，
-面向 RL 接口还原会话）—— 加一个薄插件：按任务分类在**首条消息**注入三带
-persona（**react** / **spec** / **weak**）。推理模式在首条回复前锚定
-（persona + 首轮工具 schema），第二条消息起恢复全能力。
+面向 [opencode](https://opencode.ai) 的任务感知推理模式路由：单一 primary
+agent（**spec**，read-first）加薄路由插件。三带 persona（react/spec/weak）按
+**模型**自动选择（Pro→WEAK_PRO / Flash→WEAK_FLASH），每轮幂等注入，近场引导
+（weak 带深度自适应）。基于上游 dsh-router-standard @9727510 移植。
 
 社区项目，与 Anomaly / DeepSeek 官方无关。
+
+**v0.3.0 破坏性变更**：standard agent（RL 窄面）和 RL system 替换已移除——
+上游 9727510 放弃了 RL 接口还原方向。详细迁移步骤见[兼容性](#兼容性)。
 
 ## 为什么
 
@@ -16,53 +18,63 @@ persona（**react** / **spec** / **weak**）。推理模式在首条回复前锚
 实测，21 点探针，n=2）：spec `[0, 0.15]`、不稳定过渡带 `[0.2, 0.45]`（回避）、
 react `[0.5, 1.0]`。模型层的"连续调参"是幻觉——量化为三带才是诚实接口。
 
-**首条消息**的路由之所以关键，是因为会话轨迹在早期就定型：首轮 system prompt
-与工具 schema 决定模型以什么方式对待任务。修复任务受益于 read-first 的规划者；
-构建任务受益于 hands-on 的执行者；RL 训练的会话受益于还原训练接口。锚定之后
-会话恢复完整工具面，什么都不永久放弃。
+弱带的最优 persona **因模型而异**（P11、P24 实测）：Pro 用 WEAK_PRO（spec 句 +
+classify 指令，无锚）效果最优；Flash 用 WEAK_FLASH（+recall/anti-runaway 锚，
+单任务完成率 100%）。插件按会话模型自动选择。
+
+首条消息的路由之所以关键，是因为会话轨迹在早期就定型：首轮 system prompt 与
+工具 schema 锚定模型以什么方式对待任务。锚定之后恢复完整工具面，什么都不永久放弃。
 
 ## 工作原理
 
-### 静态 primary agent
+### 唯一 primary agent
 
 | Agent | Persona | 工具面 | 适用 |
 |---|---|---|---|
-| `spec` | spec 句兜底（幂等；插件注入优先） | read 放行；edit/write/glob ask；bash 继承全局（只读放行/写操作确认） | 架构设计、方案评审、复杂规划 |
-| `standard` | RL 句 + 精简安全指令（插件整体替换 system） | 仅 read/bash/edit/write，其余全部显式 deny（含 glob、`dev_router_status`/`dev_router_mode`） | RL 接口还原的窄面会话 |
+| `spec` | spec 句兜底（幂等；插件注入优先） | read 放行；edit/write/glob ask；bash 继承全局 | 所有任务 |
 
-### 首条消息 persona 注入
+### 每轮 persona 注入（v0.3.0，幂等）
 
-新会话首条消息（无手动 agent 选择）时，插件要么分类任务、要么按手动锁处理，
-然后锚定 `spec`（RL 锁锚 `standard`）并注入：
+每次模型请求时，插件检查 system 是否已含目标 persona。若无，尾部追加（幂等——
+永不重复）：
 
 | Band | 触发 | 注入方式 |
 |---|---|---|
-| `react` | react 关键词胜（"写"/"实现"等构建任务） | 完整 system 保留 + react persona 尾附 |
-| `spec` | spec 关键词胜（"重构"/"设计"等规划任务） | spec persona 尾附（幂等——spec.md 已含则跳过） |
-| `weak` | 平局 / 无关键词 | 完整 system 保留 + weak persona 尾附 |
-| `none` | 寒暄/空消息/短句无关键词（`CHAT_RE`） | **不路由**——寒暄让位，不注入 |
-| `standard` | 手动锁（`dev_router_mode standard`） | **整体替换** system 为 RL 句 + 精简安全指令 |
+| `react` | react 关键词胜（构建任务："写"/"implement"…） | 完整 system 保留 + react persona 尾附 |
+| `spec` | spec 关键词胜（修复任务："refactor"/"debug"…） | spec persona 尾附（幂等——spec.md 已含则跳过） |
+| `weak` | 平局/无关键词 | 完整 system 保留 + **按模型选** persona 尾附 |
+| `none` | 寒暄/空消息/短句无关键词 | **不路由**——寒暄让位 |
 
-插件（`plugins/routing-suite.ts`）刻意保持薄：
+### 近场引导（weak 带，深度自适应）
 
-- **`dev_router_status`** —— 插件状态、版本金丝雀、自动路由、会话 band/persona/pending、
-  模式锁、熔断。只读。
-- **`dev_router_mode <spec|react|weak|standard|auto>`** —— 手动锁定/解锁本会话模式。
-  `spec`/`react`/`weak` = persona 尾附；`standard` = RL system 替换。手动锁持续生效，
-  直到 Tab 切到其他 agent 或改回 `auto`。
-- **自动路由**（opt-in，`OPENCODE_ROUTER_AUTO=1`）—— 会话**首条消息**时，
-  关键词计数分类器（移植自 mode-boost）选 band：react 关键词胜 → `react`；
-  spec 关键词胜 → `spec`；平局/无命中 → `weak`。会话锚定到 `spec` 并注入对应
-  persona。寒暄/问候类首条消息**不路由**（band `none`）。第二条消息起恢复
-  restore agent（默认 `build`），即全能力。
-- 用户已手动选择 agent（非 `build`）的会话不干预——手动选择永远优先。
+弱带会话中，每条用户消息后自动注入一条引导（仅弱带，强带不受影响）：
+
+| 条件 | 引导文本 |
+|---|---|
+| 简单任务（短消息、无架构关键词） | GUIDE_WEAK：快速收敛引导 |
+| 复杂任务（>120 字或含"架构/重构/设计"等） | GUIDE_DEEP：深度探索引导（架构、边界、集成点，信息驱动停止信号） |
+
+近场引导默认关闭，设 `OPENCODE_ROUTER_GUIDE=1` 启用。
+
+### 工具
+
+- **`dev_router_status`** —— 插件状态、版本、自动路由、band、agent、模式锁、熔断。只读。
+- **`dev_router_mode <mode>`** —— 手动锁定/解锁。接受 band 名（`spec`/`react`/`weak`/`auto`）、
+  数字 0-100、0.0-1.0、`mixed`。
+- **`dev_mode_subagent`** —— 在独立会话中执行任务（模式隔离），通过 `opencode run`
+  子进程实现。
+
+### 自动路由（opt-in）
+
+以 `OPENCODE_ROUTER_AUTO=1` 启动 opencode。新会话首条消息由关键词计数分类器
+选 band。寒暄/问候类首条消息不路由。第二条消息起恢复 build 全能力。
 
 ## 安装
 
-1. 复制 agent 文件（本仓库 `.disabled` 文件为遗留物，不要复制）：
+1. 复制 agent 文件：
 
    ```sh
-   cp agents/spec.md agents/standard.md ~/.config/opencode/agents/
+   cp agents/spec.md ~/.config/opencode/agents/
    ```
 
 2. 复制插件：
@@ -71,9 +83,9 @@ react `[0.5, 1.0]`。模型层的"连续调参"是幻觉——量化为三带才
    cp plugins/routing-suite.ts ~/.config/opencode/plugins/
    ```
 
-3. 重启 opencode，按 **Tab** 循环 primary agent —— 应出现 `spec`、`standard`。
+3. 重启 opencode，按 **Tab** 切到 `spec` agent。
 
-4. 可选：在 `opencode.jsonc` 注册调试工具（否则两者默认按 "ask" 处理）：
+4. 可选：在 `opencode.jsonc` 注册调试工具：
 
    ```jsonc
    "permission": {
@@ -82,83 +94,71 @@ react `[0.5, 1.0]`。模型层的"连续调参"是幻觉——量化为三带才
    }
    ```
 
-不再需要 `minimal` / anchored-standard 方案——`standard` agent + 插件的 RL
-system 替换已覆盖该路径。
-
 ## 使用
 
-- **手动**：Tab 切到 `spec`/`standard` 正常使用。
-- **会话锁**：让 agent 调用 `dev_router_mode standard`（或直接调用该工具）强制
-  某模式——`spec`/`react`/`weak` 尾附 persona，`standard` 以 RL 句+安全指令
-  整体替换 system。
-- **自动**：以 `OPENCODE_ROUTER_AUTO=1` 启动 opencode。新会话首条消息自动
-  路由。启动日志可见 `[routing-suite] session ... 分类=...`（或"分类器低置信"）
-  的决策记录，每次决策也会打到 console。
+- **手动**：Tab 到 `spec` 正常使用。
+- **会话锁**：`dev_router_mode weak`（或调用该工具）强制某模式——persona
+  每轮注入。Tab 切到其他 agent 或 `dev_router_mode auto` 解锁。
+- **自动**：`OPENCODE_ROUTER_AUTO=1` 启动。新会话首条自动路由。
 
 ### 环境变量
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `OPENCODE_ROUTER_AUTO` | 关 | `1` 启用首条消息自动路由 |
-| `OPENCODE_ROUTER_ENABLED` | 开 | `0` 完全禁用插件（无需删文件） |
-| `OPENCODE_ROUTER_RESTORE_AGENT` | `build` | 锚定首条后的恢复 agent |
-| `OPENCODE_ROUTER_ALLOW_VERSION` | — | 金丝雀强制放行某版本（验证兼容后使用） |
-| `OPENCODE_ROUTER_CRASH_TEST` | 关 | `1` 注入 hook 异常，验证 fail-open + 熔断 |
-
-寒暄/问候类首条消息永不路由（band `none`）——路由器让位给正常对话。
+| `OPENCODE_ROUTER_ENABLED` | 开 | `0` 完全禁用插件 |
+| `OPENCODE_ROUTER_ALLOW_VERSION` | — | 金丝雀强制放行 |
+| `OPENCODE_ROUTER_CRASH_TEST` | 关 | `1` 崩溃注入测试 |
+| `OPENCODE_ROUTER_WEAK_ANCHOR` | 关 | `1` 恢复旧 WEAK_FLASH 锚行（P23 回退开关） |
+| `OPENCODE_ROUTER_GUIDE` | 关 | `1` 启用近场引导 |
 
 ## 兼容性
 
 - 针对 opencode **1.18.18**（V1 插件 API）开发与测试。
 - 移植自 [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-  （MIT）。本版对齐上游 **v0.2.0** 语义：preset 拆为两种路由模式 ——
-  **standard**（RL 接口还原：首请求只带 RL 训练句 + shell/editor 工具面，
-  think-act 循环）与 **spec**（deep-think-first：分类 persona + 完整 sections）。
-  本移植以 `spec`/`standard` 双 primary agent 复刻该拆分；react/spec/weak
-  三带 persona 由插件注入，仍是三带量化。
-- **上游快照与跟进**：`scripts/upstream/` 保存上游关键文件的**逐字节快照**
-  （`router-core.mjs`、`mode-boost-core.js`、`router-bootstrap.mjs` 及本说明），
-  是插件全部注入文本的唯一只读事实源。跟进新版本四步循环：拉取子模块更新 →
-  `cp` 原样覆盖（逐字节，防 CRLF 转换）→ 重跑 sha256 比对 → 更新快照表并
-  commit。详见 `scripts/upstream/README.md`。
-- **版本金丝雀**：启动时读取全局安装的 `opencode-ai` 包版本；失配或探测失败
-  → 插件自我禁用并输出 console 警告；人工确认兼容后可设
-  `OPENCODE_ROUTER_ALLOW_VERSION` 强制启用。
-- **opencode 2.0**：V1 插件 API 在 V2 不兼容——V2 落地时需移植为
-  `Plugin.define` / `session.hook("context")` / `tool.transform`。
-  详见源码头部设计注记。
+  （MIT）。**v0.3.0 对齐上游 dsh-router-standard `9727510`**（2026-08-18）：
+  统一行为链——分类 → personaFor(mode, modelId) → 首轮核心工具面 → 首个 tool/call
+  后恢复全目录 → 近场引导（弱带）。上游在此提交放弃了 RL 接口方向。
+  上游套件另含两个子模块未移植：**dsh-super-injector**（DSH 平台专用的
+  Cordis 运行时注入管理器，与 opencode 插件模型不兼容）和 **dsh-mode-boost**
+  （已从上游移除；其分类器功能已内置到 router-core.mjs 中）。
+- **opencode 2.0**：V1 插件 API 在 V2 不兼容。核心逻辑已与 V1 hook 解耦（纯函数），
+  V2 迁移仅需重写薄适配层（chat.message→session.hook("context")、
+  system.transform→event.system、tool→tool.transform）。
+
+### v0.2.0 → v0.3.0 迁移
+
+| 变更 | 影响 | 操作 |
+|---|---|---|
+| standard agent 移除 | `agents/standard.md` 不再使用 | 从 `~/.config/opencode/agents/` 删除 |
+| RL system 替换移除 | `dev_router_mode standard` 不再工作 | 用 `weak` 替代 |
+| persona 改为每轮注入 | 每次 LLM 请求的 system 都含 persona | 无需操作（幂等、缓存中性） |
+| `OPENCODE_ROUTER_RESTORE_AGENT` 移除 | 不再需要 | 从环境变量删除（如有设置） |
 
 ## 安全
 
-- 所有 hook 全 try/catch：故障时记录日志并保持消息原样（**fail-open**，
-  管线照常工作）。
-- 连续 3 次故障后插件自我禁用并清空全部状态（恢复：重启、修复或删文件）。
-- 状态为按会话隔离的 `Map`——会话之间不共享模式锁。
-- 插件**不发任何网络请求**、**无遥测**。
+- 所有 hook try/catch：**fail-open**（故障记录，消息不动）。
+- 连续 3 次故障后自我禁用，清空状态。
+- 按会话隔离的 `Map`——不共享模式锁。
+- 不发网络请求，无遥测。
 
 ## 验证
 
-类型检查：
-
 ```sh
-npm install && npm run check
+npm install && npm run check && node --test
 ```
 
 手动清单（安装并重启后）：
 
-- [ ] Tab 可循环到 `spec` / `standard`；`spec` 写/编辑前弹确认；
-      `standard` 只暴露 read/bash/edit/write。
-- [ ] `dev_router_status` 输出正常。
-- [ ] `OPENCODE_ROUTER_AUTO=1` 时：构建任务（"写一个 python 脚本…"）注入
-      react persona；修复任务（"重构一下这个模块…"）注入 spec persona；
-      模糊任务注入 weak persona；寒暄（"你好"）**不路由**（无 band/注入日志）。
-- [ ] `dev_router_mode standard` 锁会话：下一条消息以 RL system 替换运行
-      （RL 句 + 精简安全指令），再下一条恢复 `build` 全能力。
-- [ ] 自动路由会话的第二条消息运行在恢复 agent 下（全工具回归）。
-- [ ] 崩溃注入：`OPENCODE_ROUTER_CRASH_TEST=1` 发一条消息——opencode 不崩、
-      故障被记录、3 次后插件禁用。
-- [ ] 删除全部文件（2 agents + 2 插件文件含遗留 `.disabled`）→ 行为与
-      未安装时完全一致。
+- [ ] Tab 可切到 `spec`；写/编辑前弹确认。
+- [ ] `dev_router_status` 输出正常（v0.3.0、band、agent）。
+- [ ] `OPENCODE_ROUTER_AUTO=1`："写一个 python 脚本" → react persona；
+      "重构这个模块" → spec persona；"你好" → 不路由。
+- [ ] `dev_router_mode 42` → band react；`0.3` → mixed；`weak` → weak。
+- [ ] 崩溃注入：`OPENCODE_ROUTER_CRASH_TEST=1`，3 次后自禁用。
+- [ ] `OPENCODE_ROUTER_WEAK_ANCHOR=1` → WEAK_FLASH 含 "Think deeply first"。
+- [ ] `OPENCODE_ROUTER_GUIDE=1` + weak 带任务 → 控制台可见引导注入日志。
+- [ ] 删除文件 → 行为与未安装一致。
 
 ## 致谢
 

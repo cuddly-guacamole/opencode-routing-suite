@@ -1,17 +1,21 @@
-# opencode-routing-suite
+# opencode-routing-suite v0.3.0
 
 [中文说明](./README.zh-CN.md)
 
-Task-aware reasoning-mode routing for [opencode](https://opencode.ai): two
-primary agents — **spec** (plan-first) for maintenance/fix tasks and
-**standard** (RL narrow surface) for RL-interface-restored sessions — plus a
-thin plugin that injects a three-band persona (**react** / **spec** / **weak**)
-on the first message, depending on task classification. The reasoning mode is
-anchored **before the first model reply** via persona + first-turn tool schema,
-then full capability is restored from the second message on.
+Task-aware reasoning-mode routing for [opencode](https://opencode.ai): a single
+primary agent (**spec**, read-first) plus a thin plugin that injects a
+three-band persona (**react** / **spec** / **weak**) per-request with
+**per-model selection** (Pro → WEAK_PRO, Flash → WEAK_FLASH). Anchored
+**before the first model reply** via persona + first-turn tool schema; persona
+persists idempotently for the whole session; full capability from the second
+message on.
 
 This is a community project. It is not an official opencode plugin and is not
 affiliated with or endorsed by Anomaly or DeepSeek.
+
+**v0.3.0 breaking changes**: `standard` agent (RL narrow surface) and system
+replacement are **removed** (upstream 9727510 abandoned RL-interface). See
+[Compatibility](#compatibility) for migration.
 
 ## Why
 
@@ -21,61 +25,56 @@ not a continuum (measured on DeepSeek V4 Pro, 21-point probe, n=2): spec
 `[0.5, 1.0]`. "Continuous" mode tuning is an illusion at the model layer —
 quantizing to three bands is the honest interface.
 
-Routing the **first message** matters because the trajectory of a session is
-set early: the first-turn system prompt and tool schema anchor how the model
-approaches the task. A fix task benefits from a read-first planner; a build
-task from a hands-on doer; an RL-trained session benefits from the restored
-training interface. After the anchor, the session returns to the full tool set
-so nothing is permanently given up.
+The optimal weak persona is **model-specific** (P11, P24): Pro performs best
+with WEAK_PRO (spec sentence + classify instruction, no anchors); Flash
+performs best with WEAK_FLASH (+ recall/anti-runaway anchors, 100% single-task
+completion on P23). The plugin selects automatically based on the session model.
 
 ## How it works
 
-### Static primary agents
+### Static primary agent
 
 | Agent | Persona | Tool surface | Use for |
 |---|---|---|---|
-| `spec` | spec sentence (idempotent fallback; plugin persona wins) | read allowed; edit/write/glob ask; bash inherits global (read-only allowed, writes ask) | architecture, reviews, complex planning |
-| `standard` | RL sentence + trimmed safety rules (injected by plugin as full system replacement) | read/bash/edit/write only, everything else explicitly denied (incl. glob, `dev_router_status`/`dev_router_mode`) | RL-interface-restored narrow sessions |
+| `spec` | spec sentence (idempotent fallback; plugin persona wins) | read allowed; edit/write/glob ask; bash inherits global | architecture, reviews, planning, execution — all tasks |
 
-### First-message persona injection
+### Per-request persona injection (v0.3.0, idempotent)
 
-On the first message of a session (no manual agent choice), the plugin either
-classifies the task or applies a manual lock, then anchors `spec` (or
-`standard` for RL locks) and injects:
+On every model request, the plugin checks if the system already contains the
+target persona. If not, it appends the matching persona text (idempotent —
+never duplicates):
 
 | Band | Trigger | Injection |
 |---|---|---|
-| `react` | react keywords win (build/fix tasks: "write", "implement"…) | full system kept + react persona appended |
-| `spec` | spec keywords win (planning/review tasks: "refactor", "design"…) | spec persona appended (idempotent — skipped if `spec.md` already provides it) |
-| `weak` | tie / no keywords | full system kept + weak persona appended |
+| `react` | react keywords win (build tasks: "write", "implement"…) | full system kept + react persona appended |
+| `spec` | spec keywords win (fix tasks: "refactor", "debug"…) | spec persona appended (idempotent — skipped if `spec.md` already provides it) |
+| `weak` | tie / no keywords | full system kept + weak persona appended (**model-dependent**: Pro → WEAK_PRO, Flash → WEAK_FLASH) |
 | `none` | chat / greeting / empty message (`CHAT_RE`) | **not routed** — greeting lets the session be, no injection |
-| `standard` | manual lock (`dev_router_mode standard`) | **system fully replaced** with the RL sentence + trimmed safety rules |
 
-The plugin (`plugins/routing-suite.ts`) is deliberately thin:
+### Tools
 
-- **`dev_router_status`** — shows plugin state, version canary, auto-routing,
-  per-session band/persona/pending, mode lock, circuit breaker. Read-only.
-- **`dev_router_mode <spec|react|weak|standard|auto>`** — manually lock/unlock
-  the current session. `spec`/`react`/`weak` = persona append; `standard` =
-  RL system replacement. A manual lock persists until you Tab away to another
-  agent or set it back to `auto`.
-- **Automatic routing** (opt-in, `OPENCODE_ROUTER_AUTO=1`) — on the **first
-  message** of a session, a keyword-counting classifier (ported from
-  mode-boost) picks the band: react keywords win → `react`, spec keywords win
-  → `spec`, tie/no match → `weak`. The session is anchored to `spec` with the
-  matching persona injected. Chat/greeting first messages are **left alone**
-  (band `none`, no routing). From the second message on, the session runs with
-  the restore agent (default `build`), i.e. full capability.
-- If the user has manually picked an agent (anything other than `build`),
-  the router does not intervene — manual choice always wins.
+- **`dev_router_status`** — shows plugin state, version, auto-routing, band,
+  agent, mode lock, circuit breaker. Read-only.
+- **`dev_router_mode <mode>`** — manually lock/unlock. Accepts band names
+  (`spec`/`react`/`weak`/`auto`), numeric 0-100, 0.0-1.0, or `mixed`. Manual
+  lock persists until Tab-away or `auto`.
+
+### Automatic routing (opt-in)
+
+Start opencode with `OPENCODE_ROUTER_AUTO=1`. On the **first message** of a
+session, a keyword-counting classifier (ported from mode-boost) picks the band.
+Chat/greeting messages are **left alone** (band `none`). From the second
+message on, the session runs with full `build` capability.
+
+If the user has manually picked an agent (anything other than `build`), the
+router does not intervene.
 
 ## Install
 
-1. Copy the agent files (the `.disabled` files in this repo are legacy, do not
-   copy them):
+1. Copy the agent file:
 
    ```sh
-   cp agents/spec.md agents/standard.md ~/.config/opencode/agents/
+   cp agents/spec.md ~/.config/opencode/agents/
    ```
 
 2. Copy the plugin:
@@ -84,11 +83,9 @@ The plugin (`plugins/routing-suite.ts`) is deliberately thin:
    cp plugins/routing-suite.ts ~/.config/opencode/plugins/
    ```
 
-3. Restart opencode, then press **Tab** to cycle the primary agents —
-   `spec` and `standard` should appear.
+3. Restart opencode, then press **Tab** to cycle to the `spec` agent.
 
-4. Optional: register the debug tools in `opencode.jsonc` (both default to
-   "ask" otherwise):
+4. Optional: register the debug tools in `opencode.jsonc`:
 
    ```jsonc
    "permission": {
@@ -97,98 +94,80 @@ The plugin (`plugins/routing-suite.ts`) is deliberately thin:
    }
    ```
 
-No `minimal` / anchored-standard setup is needed anymore — the `standard`
-agent plus the plugin's RL system replacement covers that path.
-
 ## Usage
 
-- **Manual**: Tab to `spec`/`standard` and work as usual.
-- **Per-session lock**: tell the agent `dev_router_mode standard` (or call the
-  tool) to force a mode — `spec`/`react`/`weak` append the persona,
-  `standard` replaces the system with the RL sentence + safety rules.
-- **Automatic**: start opencode with `OPENCODE_ROUTER_AUTO=1`. New sessions
-  route their first message automatically. Check the startup log line
-  `[routing-suite] session ... 首条消息分类=...` (or `分类器低置信`) to see
-  the decision; every decision is also logged to the console.
+- **Manual**: Tab to `spec` and work as usual.
+- **Per-session lock**: `dev_router_mode weak` (or call the tool) to force a
+  mode — persona is injected on every request. Tab to another agent or call
+  `dev_router_mode auto` to unlock.
+- **Automatic**: `OPENCODE_ROUTER_AUTO=1` at startup.
 
 ### Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
 | `OPENCODE_ROUTER_AUTO` | off | `1` enables first-message auto routing |
-| `OPENCODE_ROUTER_ENABLED` | on | `0` fully disables the plugin (no file deletion needed) |
-| `OPENCODE_ROUTER_RESTORE_AGENT` | `build` | agent restored after the anchored first message |
-| `OPENCODE_ROUTER_ALLOW_VERSION` | — | force-allow a canary version (e.g. after verifying a newer opencode) |
-| `OPENCODE_ROUTER_CRASH_TEST` | off | `1` injects a hook exception to verify fail-open + circuit breaker |
-
-Greeting/chat first messages are never routed (band `none`) — the router
-yields to normal conversation.
+| `OPENCODE_ROUTER_ENABLED` | on | `0` fully disables the plugin |
+| `OPENCODE_ROUTER_ALLOW_VERSION` | — | force-allow a canary version |
+| `OPENCODE_ROUTER_CRASH_TEST` | off | `1` injects a hook exception to verify fail-open |
+| `OPENCODE_ROUTER_WEAK_ANCHOR` | off | `1` restores old WEAK_FLASH with deep-first anchor (P23 fallback) |
+| `OPENCODE_ROUTER_GUIDE` | off | `1` enables near-field guidance |
 
 ## Compatibility
 
-- Developed and tested against opencode **1.18.18** (V1 plugin API).
+- Developed against opencode **1.18.18** (V1 plugin API).
 - Ported from [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-  (MIT). This release aligns with upstream **v0.2.0** semantics: the preset
-  splits into two routing modes — **standard** (RL interface restoration:
-  first request carries only the RL training sentence plus the shell/editor
-  surface, think-act loops) and **spec** (deep-think-first, classified persona
-  with full sections). This port mirrors that split with the `spec` and
-  `standard` primary agents; the react/spec/weak personas remain three-band
-  quantizations injected by the plugin.
-- **Upstream snapshots**: `scripts/upstream/` keeps byte-exact snapshots of
-  the upstream files (`router-core.mjs`, `mode-boost-core.js`,
-  `router-bootstrap.mjs` plus this README) as the single read-only source of
-  truth for every injected string. To track a newer upstream release: pull the
-  submodules, `cp` the files byte-for-byte, re-verify sha256, update the
-  snapshot table, commit. See `scripts/upstream/README.md`.
-- **Version canary**: on startup the plugin reads the globally installed
-  `opencode-ai` package version. Mismatch (or failed detection) → the plugin
-  disables itself with a console warning; set `OPENCODE_ROUTER_ALLOW_VERSION`
-  to override after manually verifying compatibility.
-- **opencode 2.0**: the V1 plugin API is not supported in V2 — the plugin is
-  expected to be ported to `Plugin.define` / `session.hook("context")` /
-  `tool.transform` when V2 lands. See the design notes in the source header.
+  (MIT). **v0.3.0 aligns with upstream dsh-router-standard `9727510`** (2026-08-18):
+  single unified behavior chain — classify → `personaFor(mode, modelId)` →
+  first-turn core tools → full catalog after first tool call → near-field
+  guidance (weak band). Upstream abandoned the `standard` (RL interface
+  restoration) direction in this commit. The upstream suite contains two other
+  submodules not ported: **dsh-super-injector** (DSH-specific Cordis runtime
+  injection manager, incompatible with opencode's plugin model) and
+  **dsh-mode-boost** (removed from upstream; its classifier is now built into
+  router-core.mjs).
+- **opencode 2.0**: V1 plugin API is not supported in V2. Core logic is
+  decoupled from V1 hooks (pure functions in the plugin header). V2 migration
+  will be a thin adapter rewrite (chat.message → session.hook("context"),
+  system.transform → event.system, tool → tool.transform).
+
+### v0.2.0 → v0.3.0 migration
+
+| Change | Impact | Action |
+|---|---|---|
+| `standard` agent removed | `agents/standard.md` no longer used | Delete from `~/.config/opencode/agents/` |
+| RL system replacement removed | `dev_router_mode standard` no longer works | Use `weak` for internal routing mode |
+| Persona now injected every request | System prompt has persona on every LLM call | No action (cache-neutral, idempotent) |
+| `OPENCODE_ROUTER_RESTORE_AGENT` removed | No longer needed (build restored automatically) | Remove from env if set |
 
 ## Safety
 
-- Every hook is wrapped in try/catch: on fault the plugin logs and leaves the
-  message untouched (**fail-open** — the pipeline keeps working).
-- After 3 consecutive faults the plugin disables itself and clears all state
-  (recover: restart, fix, or delete the file).
-- State is a per-session `Map` — sessions never share mode locks.
-- The plugin makes **no network requests** and adds **no telemetry**.
+- Every hook wrapped in try/catch: **fail-open** (fault logged, message untouched).
+- After 3 consecutive faults: self-disables, clears all state.
+- Per-session `Map` isolation — sessions never share locks.
+- No network requests, no telemetry.
 
 ## Verify
-
-Run the type check:
 
 ```sh
 npm install && npm run check
 ```
 
-Manual checklist (after install + restart):
+Manual checklist:
 
-- [ ] Tab cycles to `spec` / `standard`; `spec` prompts before write/edit,
-      `standard` exposes only read/bash/edit/write.
-- [ ] `dev_router_status` reports sane values.
-- [ ] With `OPENCODE_ROUTER_AUTO=1`: a build task ("write a python script …")
-      gets the react persona; a fix task ("refactor this module …") the spec
-      persona; an ambiguous task the weak persona; a greeting ("你好") is
-      **not** routed (no band/injection log lines).
-- [ ] `dev_router_mode standard` locks the session: next message runs with the
-      RL system replacement (RL sentence + trimmed safety rules), the message
-      after returns to full `build` capability.
-- [ ] Second message of an auto-routed session runs under the restore agent
-      (full tools back).
-- [ ] Crash injection: `OPENCODE_ROUTER_CRASH_TEST=1`, send a message — opencode
-      keeps running, the fault is logged, after 3 faults the plugin disables.
-- [ ] Delete all files (2 agents + 2 plugin files incl. legacy `.disabled`) →
-      behavior identical to a clean install.
+- [ ] Tab cycles to `spec`; `spec` prompts before write/edit.
+- [ ] `dev_router_status` reports sane values (v0.3.0, band, agent).
+- [ ] With `OPENCODE_ROUTER_AUTO=1`: "write a python script" → react persona;
+      "refactor this module" → spec persona; "你好" → not routed.
+- [ ] `dev_router_mode 42` → band react; `0.3` → mixed; `weak` → weak.
+- [ ] Crash injection: `OPENCODE_ROUTER_CRASH_TEST=1`, 3 faults → self-disable.
+- [ ] `OPENCODE_ROUTER_WEAK_ANCHOR=1` → WEAK_FLASH contains "Think deeply first".
+- [ ] Delete files → clean-install behavior.
 
 ## Credits
 
 Ported from [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-(MIT). Acknowledgments (per upstream):
+(MIT). Acknowledgments:
 
 - [xiaobright/modeltest](https://github.com/xiaobright/modeltest) — Project2 /
   V4.1b evaluation methodology

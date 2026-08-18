@@ -1,5 +1,19 @@
-node_modules/
-npm-debug.log*
-.DS_Store
-Thumbs.db
-*.tsbuildinfo
+# 白名单模式：只跟踪发布所需文件
+*
+
+# ── 核心源码 ──
+!plugins/
+!plugins/routing-suite.ts
+!agents/
+!agents/spec.md
+
+# ── 文档 ──
+!README.md
+!README.zh-CN.md
+!LICENSE
+!NOTICE
+
+# ── 配置 ──
+!package.json
+!tsconfig.json
+!.gitignore
