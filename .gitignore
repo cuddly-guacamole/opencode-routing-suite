@@ -10,7 +10,6 @@
 
 # ── 文档 ──
 !README.md
-!README.zh-CN.md
 !docs/
 !docs/RATIONALE.md
 !docs/PORTING.md
@@ -20,4 +19,23 @@
 # ── 配置 ──
 !package.json
 !tsconfig.json
+!.gitattributes
 !.gitignore
+
+# ── 核心源码（v0.4.0 新增） ──
+!plugins/lib/
+!plugins/lib/progressive.ts
+!plugins/lib/classic.ts
+!plugins/lib/router-core.mjs
+
+# ── 快照契约 ──
+!scripts/
+!scripts/upstream/
+!scripts/upstream/README.md
+!scripts/upstream/derived-map.md
+!scripts/upstream/router-core.mjs
+!scripts/upstream/router-bootstrap.mjs
+
+# ── 测试 ──
+!test/
+!test/router-core.test.mjs

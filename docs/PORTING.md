@@ -1,10 +1,14 @@
 # Porting details — opencode-routing-suite vs dsh-router-standard
 
-> **基线锚点**：本项目的移植基线是上游
-> [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-> **`9727510`**（2026-08-18，`dsh-router-standard` 的 preset 子模块）。
-> 本文件记录移植时的平台差异；**不随上游每一个 commit 同步**——上游方向
-> 多变（存在 revert 历史），有新 tag/release 时以"基线二次确认闸门"流程再核对。
+> **基线锚点（v0.4.0 更新，2026-08-22）**：上游组件仓库 dsh-router-standard
+> **`742b180`**（standard v0.7.4 clean rewrite，game-style timeline）为对齐冻结点。
+> v0.4.0 语义转向：**三带分类 persona 换装已废弃**，改为渐进披露游戏化时间线
+> （phase_begin 确认 → 四阶段闯关 → tools_catalog/tools_help 二级披露）。
+> 平台差异记录如下；**不随上游每个 commit 同步**——上游方向多变（存在 revert
+> 历史），有新 tag/release 时以"基线二次确认闸门"流程再核对。
+>
+> 漂移记录：`scripts/upstream/derived-map.md`（Cordis→opencode 工具映射）。
+> 移植口径：文本对齐 + 语义等价（DSH 专属机制不可移植项见 RATIONALE §4）。
 
 上游在此提交保留两个 preset：
 
@@ -49,7 +53,6 @@
 | `legacyCore`（weak band 工具面分支） | spec preset 中存在 | 未移植（opencode 用静态 agent permissions） |
 | 近场引导 | `inbox.append()`（Cordis inbox） | `messages.transform` user 角色尾插 |
 | 会话模式持久化 | `sessionMode()` 读 `session.events` | `states Map<sessionID>` + `firstUserText` 防御性捕获 |
-| 版本金丝雀 | 无 | 检测 opencode 版本，失配则禁用 |
 | 熔断器 | 无 | 连续 3 次异常 → 自我禁用 |
 
 ## 4. 未移植（DSH 专用）

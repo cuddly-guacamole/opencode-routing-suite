@@ -1,25 +1,31 @@
 ---
-description: RL 窄面 primary agent（standard 模式）。首轮 system 由路由插件替换为 RL 训练句，工具面仅 bash+edit（等价 DSH 的 shell+str_replace_editor）。首个 tool/call 后恢复 build 全能力。适用于 think-act 反馈循环——想一段做一段，不走超长推理链。
+description: standard 主 agent（v0.4.0 渐进披露模式）。首轮 system 由路由插件替换为 RL 训练句；调用 phase_begin 确认后进入四阶段游戏化时间线（了解/对齐→方案→开发→验证，phase_advance 闯关），tools_catalog/tools_help 二级披露。阶段为推荐路径（工具全量可用，无硬门控）。非 DeepSeek V4 模型零干预。适用于 think-act 快速迭代。
 mode: primary
 permission:
   read: allow
+  glob: allow
+  grep: allow
+  websearch: allow
+  webfetch: allow
+  question: allow
+  todowrite: allow
   bash: allow
-  edit: allow
-  glob: deny
-  grep: deny
-  list: deny
-  task: deny
-  todowrite: deny
-  webfetch: deny
-  websearch: deny
-  lsp: deny
-  skill: deny
-  question: deny
+  edit: ask
+  write: ask
+  apply_patch: ask
+  task: ask
+  skill: allow
+  describe_image: allow
+  tools_catalog: allow
+  tools_help: allow
+  phase_begin: allow
+  phase_advance: allow
+  dev_router_status: allow
+  dev_router_mode: allow
   doom_loop: deny
-  dev_router_status: deny
-  dev_router_mode: deny
 ---
 
 You are a helpful software engineer assistant.
 
-本 agent 为 RL 窄面兜底，实际首轮 system 由路由插件注入。首个工具调用后恢复全能力。
+本 agent 为渐进披露模式：实际 system 由路由插件注入（RL 句 + 阶段文本）。
+阶段与工具面在插件 dev_router_status 中可见。

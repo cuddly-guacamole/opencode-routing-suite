@@ -1,146 +1,111 @@
-# opencode-routing-suite v0.3.1
+# opencode-routing-suite v0.4.0
 
-[中文说明](./README.zh-CN.md)
+DeepSeek V4 路由套件的 opencode 实现——**渐进披露游戏化时间线**：首轮 system 还原为
+RL 训练句，`phase_begin` 确认后进入四阶段闯关（了解/对齐 → 拟合方案 → 开发 → 验证），
+`tools_catalog`/`tools_help` 按需二级披露；另有无干预的 spec（deep-think）agent。
 
-让 [opencode](https://opencode.ai) 按任务类型自动切换工作方式——实测三带行为学
-（spec 计划型 / react 执行型 / weak 自路由），DeepSeek V4 模型专属优化；非
-DeepSeek V4 模型零干预。社区项目，与 Anomaly / DeepSeek 官方无关。
+上游：dsh-router-standard **@742b180**（standard v0.7.4 game-style timeline）。移植口径
+**文本对齐 + 语义等价**——DSH 平台专属机制（tools.restrict 真隐藏 / PTC / engram /
+pressure-sensor 推理流）在 opencode 无等价物，当前版本阶段为推荐路径而非硬门控（实验裁决见 docs/RATIONALE.md §4）。
+
+> **对齐冻结点**：本仓库冻结对齐 742b180，不随上游每 commit 追赶（上游方向多变）。
+> 非 DeepSeek V4 模型**零干预**。
 
 ## 两种工作方式
 
-| 工作方式 | 首轮注入 | 思考形态 | 适用 |
+| agent | 首轮 system | 思考形态 | 适用 |
 |---|---|---|---|
-| **spec**（读先行·计划型） | "You are a helpful software engineer assistant." | 深度思考优先，超长推理链 | 架构、评审、规划、修复——读随便、写要问 |
-| **standard**（RL 窄面·执行型） | 训练句整体替换，工具面仅 bash+edit | 想一段做一段（think-act 循环） | 快速迭代：短循环改动文件 |
+| **standard**（渐进披露·执行型） | RL 训练句整体替换 | 想一段做一段；阶段自路由闯关 | 快速迭代：短循环改动文件 |
+| **spec**（读先行·计划型） | opencode 原生组装（零干预） | 深度思考优先，不设上限 | 架构、评审、规划、修复 |
 
-运行原理：首条消息被分类（三带），插件在首个模型请求前注入匹配 persona + 首轮
-核心工具集，随后恢复完整能力。详细设计依据见 [docs/RATIONALE.md](./docs/RATIONALE.md)。
+## 阶段玩法（standard）
+
+1. **首轮**：system 整体替换为 RL 句（46 字符），工具全量可见（无硬门控）。
+2. 调 **`phase_begin`** 确认开始 → 注入机制声明 + MAXential 泄压 + 阶段 0 指引。
+3. 按阶段推进（**`phase_advance`** 闯关，或按工具证据自动提示）：
+   - `0 了解/对齐`：read / glob / grep / websearch / webfetch / question
+   - `1 拟合方案`：todowrite（plan 模式用 opencode 原生 Shift+Tab）
+   - `2 开发`：write / edit / apply_patch
+   - `3 验证`：bash
+4. **`tools_catalog`**（名+摘要）/ **`tools_help`**（详情+阶段归属）：注意力经济——
+   工具 schema 是注意力税（上游实测：59K system 下 Flash 首轮 0 行动），按需查比全铺好。
+5. 阶段状态持久化 `~/.opencode/router-standard/stages.json`（原子写，跨进程恢复）。
+
+we-form 阶段文本（you-form 是 let me 吸引子——上游实测结论）；MAXential 泄压引导
+（深度自主，不设思考帽）。
 
 ## 快速开始
 
 ```sh
-cp agents/spec.md agents/standard.md ~/.config/opencode/agents/
+# 1. agents（primary agent）
+cp agents/standard.md agents/spec.md ~/.config/opencode/agents/
+
+# 2. 插件（入口 + lib/ 全部文件都要）
+mkdir -p ~/.config/opencode/plugins/
 cp plugins/routing-suite.ts ~/.config/opencode/plugins/
+cp -r plugins/lib ~/.config/opencode/plugins/lib
 ```
 
-重启 opencode，按 **Tab** 切到 `spec` 或 `standard` agent，调用 `dev_router_status`
-验证生效。
-
-可选：在 `opencode.jsonc` 注册调试工具：
-
-```jsonc
-"permission": {
-  "dev_router_status": "allow",
-  "dev_router_mode": "ask"
-}
-```
+重启 opencode，**Tab** 切到 `standard` 或 `spec` agent，调 `dev_router_status` 验证
+（显示 v0.4.0 / 阶段 / 持久化）。
 
 ## 使用
 
-- **自动路由**（opt-in）：`OPENCODE_ROUTER_AUTO=1` 启动，首条消息分类选 band；
-  寒暄/问候不路由；第二条起恢复 build 全能力。
-- **手动锁**：`dev_router_mode spec|react|weak|standard|auto` 强制某模式，
-  persona 每轮注入；Tab 切其他 agent 即解锁。
-- **数字接口**：`dev_router_mode 42` → react、`0.3` → mixed、`weak` → weak。
-- **近场引导**：`OPENCODE_ROUTER_GUIDE=1` 启用，弱带会话每条用户消息后按任务
-  复杂度注入深/浅引导。
+- **standard 会话**：默认渐进披露。首轮见 RL 句；`phase_begin` 开启；`phase_advance`
+  闯关；`dev_router_status` 随时看阶段。
+- **自动路由（opt-in）**：`OPENCODE_ROUTER_AUTO=1` 启动后，首条消息按构建/修复类型
+  自动选 agent（react→standard / spec→spec）。不设置则手动 Tab 选择。
+- **非 DeepSeek V4**：全部零干预（不注入、不替换、不改写）。
+- **状态文件**：`OPENCODE_ROUTER_STAGE_FILE` 可覆盖
+  `~/.opencode/router-standard/stages.json`。
 
-### 工具
+## 配置（环境变量）
 
-- **`dev_router_status`** — 插件状态、版本、band、agent、模型、模式锁、熔断。只读。
-- **`dev_router_mode <mode>`** — 手动锁定/解锁推理模式。
-- **`dev_mode_subagent <mode> <task>`** — 独立会话模式隔离，`opencode run` 子进程。
-
-### 环境变量
-
-| 变量 | 默认 | 作用 |
+| 变量 | 默认 | 说明 |
 |---|---|---|
-| `OPENCODE_ROUTER_AUTO` | 关 | `1` 启用首条消息自动路由 |
 | `OPENCODE_ROUTER_ENABLED` | 开 | `0` 完全禁用插件 |
-| `OPENCODE_ROUTER_ALLOW_VERSION` | — | 金丝雀强制放行 |
+| `OPENCODE_ROUTER_CLASSIC` | 关 | `1` 回退 v0.3.1 三带分类 persona 路由（冻结版） |
+| `OPENCODE_ROUTER_AUTO` | 关 | `1` 首条消息自动选 agent 入口 |
 | `OPENCODE_ROUTER_CRASH_TEST` | 关 | `1` 崩溃注入测试 |
-| `OPENCODE_ROUTER_WEAK_ANCHOR` | 关 | `1` 恢复旧 WEAK_FLASH 锚行 |
-| `OPENCODE_ROUTER_GUIDE` | 关 | `1` 启用近场引导 |
+| `OPENCODE_ROUTER_STAGE_FILE` | `~/.opencode/router-standard/stages.json` | 阶段状态文件路径 |
 
-## 兼容性与风险
 
-- **opencode 1.18.18**（V1 插件 API）。版本不匹配时插件自动禁用（金丝雀），
-  可用 `OPENCODE_ROUTER_ALLOW_VERSION` 强制放行。
-- **模型门控**：仅 DeepSeek V4（`deepseek` + `v4`）模型获得测试过的 persona 分支
-  （Pro→WEAK_PRO / Flash→WEAK_FLASH）；其余模型使用通用 persona，不注入专属锚。
-  装了这个插件**不会**改变非 DeepSeek V4 模型的行为。
-- **卸载/回滚**：删除这两个文件即完全还原，不留状态：
+## 回退（v0.3.1 classic）
 
-  ```sh
-  rm ~/.config/opencode/agents/spec.md ~/.config/opencode/agents/standard.md
-  rm ~/.config/opencode/plugins/routing-suite.ts
-  ```
+`OPENCODE_ROUTER_CLASSIC=1` 回到冻结的 v0.3.1：三带分类 persona 注入 + RL 窄面
+standard band + 近场引导（`OPENCODE_ROUTER_GUIDE=1`）。冻结版不随上游演进。
 
-- **与 opencode 自带 agent 的区别**：自带 `build`/`plan` 是静态权限预设；本项目
-  会按任务类型**自动切换** persona 与首轮工具面，且只影响会话首轮路由与注入。
+## 与上游的关系
 
-## 为什么这样设计
+- 基线：dsh-router-standard `@742b180`（standard v0.7.4，2026-08-22 fetch，对齐冻结点）。
+- 快照：`scripts/upstream/`（router-core 逐字节 + bootstrap 参考 + 派生映射与漂移记录）。
+- 移植口径：文本对齐 + 语义等价；DSH 机制（restrict/PTC/engram/pressure-sensor 推理流）
+  在 opencode 不可移植（permission.ask 钩子主线未接线、无 reasoning 流——见实验报告 §X1）。
+- 本版本交付**叙述层渐进披露**；硬门控（静态 deny 真隐藏）由实验裁决后
+  决定（`tool.ids` 枚举 ✅ / deny=请求级移除 ✅ / config.update 中断消息 ⚠️）。
 
-要点（详细见 [docs/PORTING.md](./docs/PORTING.md) 与 [docs/RATIONALE.md](./docs/RATIONALE.md)）：
+## 文件布局
 
-- 模型沿 react↔spec 轴行为坍缩为三个稳定区，不是连续谱——三带量化是诚实接口。
-- persona 是主导触发器，模型在首请求路径提交——所以必须在首个请求前路由。
-- 模型不能自路由——模式选择必须来自外部，本插件即外部路由器。
-- 弱带最优 persona **因模型而异**（Pro 无锚 / Flash 带锚），插件自动选择。
-- 首条消息路由后恢复完整能力，什么都不永久放弃。
-
-## 移植内容
-
-对齐上游 [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)
-**`9727510`**（2026-08-18）。行为链：分类 → `personaFor(mode, modelId)` → 首轮
-核心工具面 → 首个 tool/call 后恢复全目录 → 近场引导（弱带）。
-
-平台差异（Cordis → opencode hooks、工具映射、权限系统）、结构差异、未移植的
-DSH 专用组件：见 [docs/PORTING.md](./docs/PORTING.md)。
-
-## 验证
-
-```sh
-npm run check && node --test
+```
+agents/standard.md       渐进披露 primary agent
+agents/spec.md           无干预 deep-think primary agent
+plugins/routing-suite.ts 入口（CLASSIC 选路）
+plugins/lib/progressive.ts 渐进披露实现
+plugins/lib/classic.ts     v0.3.1 冻结回退实现
+plugins/lib/router-core.mjs 核心层（纯函数，直测）
+scripts/upstream/        上游快照 + 漂移记录
 ```
 
-手动清单（安装并重启后）：
+## 测试
 
-- [ ] Tab 切到 `spec`（写/编辑前确认）与 `standard`（仅 bash+edit）。
-- [ ] `dev_router_status` 输出正常（band、agent、model）。
-- [ ] `OPENCODE_ROUTER_AUTO=1`："写一个 python 脚本" → react；"重构这个模块" → spec；"你好" → 不路由。
-- [ ] `dev_router_mode 42` → react；`0.3` → mixed；`weak` → weak；`standard` → RL 窄面。
-- [ ] 崩溃注入：`OPENCODE_ROUTER_CRASH_TEST=1`，3 次后自禁用。
-- [ ] `OPENCODE_ROUTER_WEAK_ANCHOR=1` → WEAK_FLASH 含 "Think deeply first"。
-- [ ] `OPENCODE_ROUTER_GUIDE=1` + weak 带任务 → 控制台可见引导注入日志。
-- [ ] 删除文件 → 行为与未安装一致。
+```sh
+npm test      # node --test（核心层直测：分类/阶段/闯关/映射，30 例）
+npm run check # tsc --noEmit（类型检查）
+```
 
-## 从 v0.2.0 迁移
+## 已知边界
 
-| 变更 | 影响 | 操作 |
-|---|---|---|
-| `standard` agent 可用 | `agents/standard.md` 已添加 | 复制到 `~/.config/opencode/agents/` |
-| `dev_router_mode standard` 可用 | RL 窄面模式 | 用 `dev_router_mode standard` 激活 |
-| persona 改为每轮注入 | 每次 LLM 请求的 system 都含 persona | 无需操作（幂等、缓存中性） |
-| `OPENCODE_ROUTER_RESTORE_AGENT` 移除 | 不再需要 | 从环境变量删除（如有设置） |
-
-## 安全
-
-- 所有 hook try/catch：**fail-open**（故障记录，消息不动）。
-- 连续 3 次故障后自我禁用，清空状态。
-- 按会话隔离的 `Map`——不共享模式锁。
-- 不发网络请求，无遥测。
-
-## 实证与归属
-
-- **实测数据**：三带（21 点探针 n=2）、WEAK_PRO/FLASH 分支（P11/P24/P23）、
-  近场引导（P30）。编号原文见上游仓库 `docs/paper.md` / `docs/experiments.md`。
-  人话版：每次切换都选对配置（"100% 路由"）；Flash 单任务完成率 100%（P23）。
-- **移植自** [yjh051108/dsh-routing-suite](https://github.com/yjh051108/dsh-routing-suite)（MIT）。
-- 评测方法：[xiaobright/modeltest](https://github.com/xiaobright/modeltest)（Project2 / V4.1b）。
-- 锚定机制：[xiaobright/dsh-anchored-standard](https://github.com/xiaobright/dsh-anchored-standard)（MIT）。
-
-## License
-
-MIT。分类器与 persona 派生自 yjh051108/dsh-routing-suite 的 `router-standard`
-preset；原始版权与 MIT 声明见 [`NOTICE`](./NOTICE)。
+- `opencode run` 每次新进程会话（`-c` 不能跨进程续同一会话）；真实 TUI 会话正常。
+- 阶段状态跨进程恢复走磁盘（stateOf 回退）。
+- system 整体替换会顶掉 opencode 基础指令与 AGENTS.md（标准模式语义：还原训练接口；
+  工具 schema 由 API 层提供，模型仍见全工具）。

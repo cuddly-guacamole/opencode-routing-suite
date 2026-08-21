@@ -6,7 +6,8 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "allowJs": true
   },
-  "include": ["plugins/routing-suite.ts"]
+  "include": ["plugins/routing-suite.ts", "plugins/lib/progressive.ts", "plugins/lib/classic.ts"]
 }

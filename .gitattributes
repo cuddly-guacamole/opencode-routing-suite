@@ -1,0 +1,5 @@
+# 仓库统一 LF：检出与提交均保持 LF，杜绝 CRLF 混入
+* text=auto eol=lf
+
+# 快照契约：逐字节（sha256 校验），禁止任何行尾转换
+scripts/upstream/* -text
