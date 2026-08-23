@@ -19,8 +19,8 @@
 
 | 文件 | 来源仓库 | commit | tag / 描述 | sha256 |
 |---|---|---|---|---|
-| `router-core.mjs` | dsh-router-standard | `742b180` (742b18058087fc3fbe4855abfb1d2f11f46d5d16) | standard v0.7.4 clean rewrite（对齐冻结点，2026-08-22 fetch） | `544c12c64cb39f4bf8e40b355c35fbcd5ab5d1cc7b7c41d7f5445cebdae3d61c` |
-| `router-bootstrap.mjs` | dsh-router-standard | `742b180` | 同上（**参考地位**：DSH 平台代码，opencode 侧重写见 plugins/progressive.ts） | `80e6bff8f7986937b2cfefde4f8218e215620c37a14178d2fc4453b047c75270` |
+| `router-core.mjs` | dsh-router-standard | `7d0d1d3` (7d0d1d37d323b097a4fe658258863524d20aff4c) | standard v1.15.0（分叉主线；core 与 742b180 逐字节相同，2026-08-23 fetch） | `544c12c64cb39f4bf8e40b355c35fbcd5ab5d1cc7b7c41d7f5445cebdae3d61c` |
+| `router-bootstrap.mjs` | dsh-router-standard | `7d0d1d3` | v1.15.0（参考地位：DSH 平台代码，opencode 侧重写见 plugins/progressive.ts） | `52c228da49ae0b120e81ecb3bcc0a02f13fa8cdd123905b0af6977bbd4242353` |
 
 
 ### 来源说明

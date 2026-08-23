@@ -120,15 +120,15 @@ export const GLOBAL_SAFE = [
   'read', 'write', 'edit', 'glob', 'grep', 'bash', 'webfetch', 'websearch',
   'question', 'todowrite', 'task', 'apply_patch', 'skill', 'describe_image',
   'tools_catalog', 'tools_help', 'phase_begin', 'phase_advance',
-  'dev_router_status', 'dev_router_mode',
+  'dev_router_status', 'dev_router_mode', 'delivery_check',
 ]
 
 /** 闯关提示（阶段切换时注入一次）。 */
 export const STAGE_GUIDES = [
-  'Phase: Understanding. Unlocked: read/glob/grep/websearch/webfetch/question. Map the problem first; complete understanding, then call phase_advance to enter planning.',
-  'Phase: Planning. Unlocked: todowrite (plan mode via Tab/Shift+Tab is native — use it for plan-only turns). Lock the plan, then call phase_advance to enter development.',
-  'Phase: Development. Unlocked: write/edit/apply_patch. Produce, then call phase_advance to enter verification.',
-  'Phase: Verification. Unlocked: bash. Verify and deliver — the full catalog is open.',
+  'Phase: understanding. Phase tools: read/glob/grep/websearch/webfetch/question. Ground first: recall, verify claims, then read/ask. Runtime caps are enforced at call time — check tools_help before big calls. Complete when: the task requirements and available evidence are stated clearly.',
+  'Phase: planning. Phase tools: todowrite (plan mode via Tab/Shift+Tab is native). Lock the plan and decisions, then work.',
+  'Phase: development. Phase tools: write/edit/apply_patch. Re-read before re-edit: a file changed since your last read must be read again first. write/edit results carry the FULL before/after text — take only path/operation and inspect changed lines with grep/read; never print a whole write/edit result. Cross-language escaping: shell/JS strings may interpolate ${...} — build such strings with single quotes or concatenation first. Complete when: the artifact exists and passes its own self-check (loads, no console errors, key values sane).',
+  'Phase: verification → delivery gate. Phase tools: bash. **Complete only when: delivery_check(file) returns PASS** — artifact exists / non-empty / UTF-8. Until delivery_check passes, do NOT report the task as delivered — any FAIL: fix and re-run.',
 ]
 
 /** 阶段解锁列表（前 stage+1 阶段 ∪ GLOBAL_SAFE）。 */
@@ -188,4 +188,27 @@ export const TOOL_SUMMARIES = {
   phase_advance: 'advance to the next phase',
   dev_router_status: 'show routing state',
   dev_router_mode: 'show/override reasoning mode',
+  delivery_check: 'delivery gate: artifact exists / non-empty / UTF-8 (PASS before declaring done)',
+}
+
+/** 交付门（上游 delivery_check 的文件三验证契约；无浏览器 smoke 的 opencode 版）。
+ *  info 由调用方从 fs 读得：{ exists, size, utf8 }。纯函数可单测。 */
+export function verifyDeliveryPieces(file, info) {
+  const checks = []
+  checks.push({
+    name: 'exists',
+    pass: info.exists === true,
+    detail: info.exists === true ? 'present' : 'missing: ' + String(file),
+  })
+  checks.push({
+    name: 'non-empty',
+    pass: info.exists === true && Number(info.size) > 0,
+    detail: Number(info.size) > 0 ? String(info.size) + ' bytes' : 'empty file',
+  })
+  checks.push({
+    name: 'utf8',
+    pass: info.utf8 === true,
+    detail: info.utf8 === true ? 'valid UTF-8' : 'invalid UTF-8 encoding',
+  })
+  return { ok: checks.every((c) => c.pass), checks }
 }

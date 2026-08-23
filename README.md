@@ -26,7 +26,7 @@ pressure-sensor 推理流）在 opencode 无等价物，当前版本阶段为推
    - `0 了解/对齐`：read / glob / grep / websearch / webfetch / question
    - `1 拟合方案`：todowrite（plan 模式用 opencode 原生 Shift+Tab）
    - `2 开发`：write / edit / apply_patch
-   - `3 验证`：bash
+   - `3 验证`：bash + **`delivery_check` 交付门**（文件存在/非空/UTF-8 → PASS 才可宣告交付，FAIL 必须修复重跑）
 4. **`tools_catalog`**（名+摘要）/ **`tools_help`**（详情+阶段归属）：注意力经济——
    工具 schema 是注意力税（上游实测：59K system 下 Flash 首轮 0 行动），按需查比全铺好。
 5. 阶段状态持久化 `~/.opencode/router-standard/stages.json`（原子写，跨进程恢复）。

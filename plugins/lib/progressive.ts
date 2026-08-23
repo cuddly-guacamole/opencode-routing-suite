@@ -293,6 +293,35 @@ export const progressiveImpl: Plugin = async ({ client }) => {
         },
       }),
 
+      delivery_check: tool({
+        description:
+          "交付 gate（阶段出口契约）：校验交付物文件存在/非空/UTF-8；输出 PASS/FAIL + 证据清单。全部 PASS 才允许向用户宣告完成交付——任一 FAIL 必须修复后重跑，不允许绕过。",
+        args: { file: z.string().describe("交付物文件路径（绝对路径或工作区相对路径）") },
+        async execute(args, _ctx) {
+          const file = String(args.file ?? "").trim()
+          if (!file) return "delivery-check: FAIL — file path required"
+          let info = { exists: false, size: 0, utf8: false }
+          try {
+            const buf = readFileSync(file)
+            info = { exists: true, size: buf.length, utf8: true }
+            try {
+              new TextDecoder("utf-8", { fatal: true }).decode(buf)
+            } catch {
+              info.utf8 = false
+            }
+          } catch {
+            info = { exists: false, size: 0, utf8: false }
+          }
+          const r = core.verifyDeliveryPieces(file, info)
+          const lines = ["delivery-check: " + (r.ok ? "PASS" : "FAIL"), "file: " + file]
+          for (const c of r.checks) {
+            lines.push("- " + c.name + ": " + (c.pass ? "PASS" : "FAIL") + " (" + c.detail + ")")
+          }
+          if (!r.ok) lines.push("Do NOT report completion — fix the failing checks and re-run delivery_check.")
+          return lines.join("\n")
+        },
+      }),
+
       tools_catalog: tool({
         description: "渐进披露一级：全部工具（名称 + 一行摘要）。query 关键词过滤。",
         args: { query: z.string().optional().describe("关键词过滤（可选）") },

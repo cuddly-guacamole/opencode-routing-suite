@@ -4,7 +4,7 @@ import {
   classifyTask, isChatTask, isComplexTask, isDeepSeekV4, isDeepSeekV4Flash, isDeepSeekV4Pro,
   parseMode, bandOf, bandFor, clamp01,
   STAGES, GLOBAL_SAFE, MAX_STAGE, STAGE_GUIDES,
-  unlockedFor, stageText, advanceStage, RL_PERSONA,
+  unlockedFor, stageText, advanceStage, RL_PERSONA, verifyDeliveryPieces,
 } from "../plugins/lib/router-core.mjs"
 
 /**
@@ -65,8 +65,35 @@ describe("advanceStage 闯关证据", () => {
   it("不越界", () => { assert.equal(advanceStage(3, ["bash"], ""), 3) })
 })
 
+describe("交付门 verifyDeliveryPieces", () => {
+  it("三验证全过 → PASS", () => assert.deepEqual(
+    verifyDeliveryPieces("a.txt", { exists: true, size: 5, utf8: true }),
+    { ok: true, checks: [
+      { name: "exists", pass: true, detail: "present" },
+      { name: "non-empty", pass: true, detail: "5 bytes" },
+      { name: "utf8", pass: true, detail: "valid UTF-8" },
+    ] }))
+  it("文件缺失 → FAIL", () => {
+    const r = verifyDeliveryPieces("x.txt", { exists: false, size: 0, utf8: false })
+    assert.equal(r.ok, false)
+    assert.equal(r.checks[0].pass, false)
+    assert.ok(r.checks[0].detail.includes("missing"))
+  })
+  it("空文件 → non-empty FAIL", () => {
+    const r = verifyDeliveryPieces("a.txt", { exists: true, size: 0, utf8: true })
+    assert.equal(r.ok, false)
+    assert.equal(r.checks[1].pass, false)
+  })
+  it("非 UTF-8 → utf8 FAIL", () => {
+    const r = verifyDeliveryPieces("a.txt", { exists: true, size: 3, utf8: false })
+    assert.equal(r.ok, false)
+    assert.equal(r.checks[2].pass, false)
+  })
+})
+
 describe("叙述文本", () => {
   it("RL 句", () => assert.equal(RL_PERSONA, "You are a helpful software engineer assistant."))
   it("STAGE_GUIDES 数量", () => assert.equal(STAGE_GUIDES.length, 4))
+  it("验证阶段含交付门契约", () => assert.ok(STAGE_GUIDES[3].includes("delivery_check")))
   it("isComplexTask", () => { assert.equal(isComplexTask("请全面分析这个架构"), true); assert.equal(isComplexTask("小任务"), false) })
 })
