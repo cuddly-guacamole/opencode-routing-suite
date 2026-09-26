@@ -39,3 +39,4 @@
 # ── 测试 ──
 !test/
 !test/router-core.test.mjs
+!test/progressive-runtime.test.mjs

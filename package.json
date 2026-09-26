@@ -1,7 +1,7 @@
 {
   "name": "opencode-routing-suite",
-  "version": "0.3.1",
-  "description": "Task-aware reasoning-mode routing for opencode: spec + standard primary agents, three-band personas with per-model selection, per-request idempotent injection, numeric mode interface — ported from dsh-router-standard @9727510",
+  "version": "0.5.0",
+  "description": "Progressive-disclosure routing for opencode: RL persona first turn + phase_begin/phase_advance timeline with completion-signal driven advancement + on-demand tool catalogs + evidence-gated delivery_check (incl. numeric invariants) — ported from dsh-router-standard snapshot @b39112d (standard v1.27.0)",
   "type": "module",
   "private": true,
   "license": "MIT",
