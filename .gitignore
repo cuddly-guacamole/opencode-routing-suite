@@ -28,6 +28,16 @@
 !plugins/lib/classic.ts
 !plugins/lib/router-core.mjs
 
+# ── host 适配缝 + 引擎（v0.5.0 V2 兼容新增）──
+# 逐文件枚举，不写 !plugins/lib/host/**：白名单模式的约定是只放行逐条审过的文件
+# （理由同下面 CI 那段注释）。`plugins/lib/host/` 这一级目录本身也被顶部 `*` 忽略，
+# 故必须**先放行目录、再逐文件放行**，否则 !plugins/lib/host/x.ts 不生效。
+!plugins/lib/engine.ts
+!plugins/lib/host/
+!plugins/lib/host/contract.ts
+!plugins/lib/host/v1.ts
+!plugins/lib/host/v2.ts
+
 # ── 快照契约 ──
 !scripts/
 !scripts/upstream/
@@ -35,8 +45,18 @@
 !scripts/upstream/derived-map.md
 !scripts/upstream/router-core.mjs
 !scripts/upstream/router-bootstrap.mjs
+!scripts/upstream/provenance.json
+!scripts/verify-upstream-snapshot.mjs
+
+# ── CI（快照契约 3.4 的执行）──
+# 逐文件枚举，不写 !.github/**：白名单模式的约定是只放行逐条审过的文件，
+# 宽泛规则会把未审阅的新文件一并放行，与本文件顶部的 `*` 默认拒绝相矛盾。
+!.github/
+!.github/workflows/
+!.github/workflows/verify-upstream.yml
 
 # ── 测试 ──
 !test/
 !test/router-core.test.mjs
 !test/progressive-runtime.test.mjs
+!test/host-seam.test.mjs

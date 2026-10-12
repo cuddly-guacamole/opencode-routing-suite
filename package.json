@@ -1,6 +1,6 @@
 {
   "name": "opencode-routing-suite",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Progressive-disclosure routing for opencode: RL persona first turn + phase_begin/phase_advance timeline with completion-signal driven advancement + on-demand tool catalogs + evidence-gated delivery_check (incl. numeric invariants) — ported from dsh-router-standard snapshot @b39112d (standard v1.27.0)",
   "type": "module",
   "private": true,
@@ -15,6 +15,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test",
+    "verify:upstream": "node scripts/verify-upstream-snapshot.mjs"
   }
 }

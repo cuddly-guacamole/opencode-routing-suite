@@ -1,0 +1,27 @@
+# Enforces the third snapshot rule — 更新走流程 — from scripts/upstream/README.md
+# §快照规则（契约 3.4）. That rule was prose only until this file: an in-place
+# edit to a read-only upstream snapshot used to be invisible to every check.
+# The other two rules (只读 / 唯一事实源) are enforced by the same command: it
+# re-hashes scripts/upstream/ against the recorded provenance and fails on any
+# unrecorded addition, any missing file, and any byte-level drift.
+#
+# Node version: this repository declares no `engines` field and has no .nvmrc,
+# so none is pinned here rather than inventing a target. The verifier uses only
+# node:crypto / node:fs / node:path, which every Node on a GitHub runner has.
+# No `npm ci`: the verifier is zero-dependency, so there is nothing to install.
+
+name: verify-upstream-snapshot
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    name: 只读 / 唯一事实源 / 更新走流程
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the snapshot provenance check
+        run: node scripts/verify-upstream-snapshot.mjs

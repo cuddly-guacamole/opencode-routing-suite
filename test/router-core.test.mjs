@@ -5,7 +5,7 @@ import {
   parseMode, bandOf, bandFor, clamp01,
   STAGES, GLOBAL_SAFE, MAX_STAGE, STAGE_GUIDES,
   unlockedFor, stageText, advanceStage, completionSignals, firstUserTask, beginPhase, RL_PERSONA,
-  PROGRESSIVE_DECL, PROACTIVITY_GUIDE, DESC, TOOL_SUMMARIES,
+  PROGRESSIVE_DECL, PROGRESSIVE_DECL_GATED, GATE_ON_NOTICE, PROACTIVITY_GUIDE, DESC, DESC_GATED, TOOL_SUMMARIES,
   verifyDeliveryPieces, validateDeliveryEvidence, EVIDENCE_KINDS,
 } from "../plugins/lib/router-core.mjs"
 
@@ -47,13 +47,31 @@ describe("渐进披露四阶段", () => {
   it("阶段 0 工具为读/搜面", () => assert.deepEqual(STAGES[0].tools, ["read", "glob", "grep", "websearch", "webfetch", "question"]))
   it("规划阶段映射（todowrite + task 隔离面）", () => assert.deepEqual(STAGES[1].tools, ["todowrite", "task"]))
   it("开发阶段映射（str_replace_editor→apply_patch）", () => assert.deepEqual(STAGES[2].tools, ["write", "edit", "apply_patch"]))
-  it("GLOBAL_SAFE 覆盖全部阶段工具", () => {
-    for (const s of STAGES) for (const t of s.tools) assert.ok(GLOBAL_SAFE.includes(t), `${t} 应在 GLOBAL_SAFE`)
+  it("GLOBAL_SAFE 覆盖阶段 0/1/3 的工具，但**不含**阶段 2 的写入面（那是门控的收窄面）", () => {
+    for (const i of [0, 1, 3]) {
+      for (const t of STAGES[i].tools) assert.ok(GLOBAL_SAFE.includes(t), `${t}（阶段 ${i}）应在 GLOBAL_SAFE`)
+    }
+    // 反例：写入面**必须不在** GLOBAL_SAFE，否则 unlockedFor 四阶段恒等于它、门控空转
+    for (const t of STAGES[2].tools) {
+      assert.ok(!GLOBAL_SAFE.includes(t), `${t}（阶段 2 写入面）不得在 GLOBAL_SAFE，否则门控收不掉它`)
+    }
   })
-  it("unlockedFor = 本阶段工具 ∪ GLOBAL_SAFE（阶段表全覆盖 → 与 GLOBAL_SAFE 等长）", () => {
+  it("unlockedFor 随阶段**真的有判别力**：阶段 0/1 不含写入面，阶段 2/3 含", () => {
+    const WRITE_FACE = STAGES[2].tools // write / edit / apply_patch
+    for (const t of WRITE_FACE) {
+      for (const i of [0, 1]) {
+        assert.ok(!unlockedFor(i).includes(t), `阶段 ${i} 的 unlockedFor 不得含 ${t}（门控要收掉它）`)
+      }
+      for (const i of [2, 3]) {
+        assert.ok(unlockedFor(i).includes(t), `阶段 ${i} 的 unlockedFor 必须含 ${t}（已解锁）`)
+      }
+    }
+    // 且阶段 0/1 的结果确实比阶段 2/3 窄（不是恒等——旧断言正是栽在这里）
+    assert.ok(unlockedFor(0).length < unlockedFor(2).length, "阶段 0 必须比阶段 2 窄")
+    assert.ok(unlockedFor(1).length < unlockedFor(3).length, "阶段 1 必须比阶段 3 窄")
+    // 本阶段工具仍恒在（原断言的有效部分保留）
     for (let i = 0; i <= MAX_STAGE; i++) {
-      assert.equal(unlockedFor(i).length, GLOBAL_SAFE.length)
-      for (const t of STAGES[i].tools) assert.ok(unlockedFor(i).includes(t))
+      for (const t of STAGES[i].tools) assert.ok(unlockedFor(i).includes(t), `阶段 ${i} 的本阶段工具 ${t} 必须可见`)
     }
   })
   it("stageText we-form + 本阶段工具 + 完成信号口径", () => {
@@ -304,8 +322,13 @@ describe("注入文本卫生（本平台不存在的指名一律不得出现）"
   ]
   const surfaces = () => ({
     PROGRESSIVE_DECL,
+    // ⚠️ 门控开时的注入文本也必须扫：它是**另一条**会进 system 的串（R5 新增）。
+    PROGRESSIVE_DECL_GATED,
+    GATE_ON_NOTICE,
     PROACTIVITY_GUIDE,
     DESC: Object.values(DESC).join(" "),
+    // ⚠️ 门控开时的工具描述变体同样进模型上下文（R5 新增）。
+    DESC_GATED: Object.values(DESC_GATED).join(" "),
     STAGE_GUIDES: STAGE_GUIDES.join(" "),
     stageText: [0, 1, 2, 3].map((s) => stageText(s, "sample task")).join(" "),
     // 工具摘要也进注入面（tools_catalog / tools_help / phase_advance 的 New this stage 技能卡）
@@ -319,13 +342,38 @@ describe("注入文本卫生（本平台不存在的指名一律不得出现）"
       }
     }
   })
-  it("判据可失败（自证不是恒真断言）", () => {
-    const low = ("Phase tools: " + FORBIDDEN[0]).toLowerCase()
-    assert.ok(low.includes(FORBIDDEN[0].toLowerCase()))
-    assert.ok(!PROGRESSIVE_DECL.toLowerCase().includes(FORBIDDEN[0].toLowerCase()))
+  it("判据可失败：禁用 token 注入**真实产品文本**（内存内，不落盘）后，同一条断言必须 FAIL", () => {
+    // ⚠️ 旧的「自证」是 `low = "Phase tools: " + FORBIDDEN[0]` 再断言 `low.includes(FORBIDDEN[0])`
+    // ——读自己拼的字符串，**恒真、零信息量**（审计点名 T1）。这里改成真的咬产品代码：
+    // 谓词与上面扫描用的是同一条；① 真实产品文本必须过；② 把 token 拼到**同一份真实文本**上，
+    // 同一条谓词必须抛。② 之所以不是新的恒真式，是因为 ① 已证明该谓词在真实文本上为真。
+    const scan = (text) => {
+      const low = text.toLowerCase()
+      for (const f of FORBIDDEN) {
+        if (low.includes(f.toLowerCase())) throw new Error("含禁用 token: " + f)
+      }
+      return true
+    }
+    // ① 真实产品文本通过（且确实非空——防空跑）
+    const realSurfaces = surfaces()
+    for (const [name, text] of Object.entries(realSurfaces)) {
+      assert.ok(text.length > 0, `${name} 面非空（否则扫描是空跑）`)
+      assert.ok(scan(text), `${name} 真实文本必须通过`)
+    }
+    // ② 同一份真实文本 + 一个禁用 token ⇒ 同一谓词必须 FAIL
+    for (const f of FORBIDDEN) {
+      assert.throws(() => scan(PROGRESSIVE_DECL + " " + f), /含禁用 token/, `注入 ${f} 后必须被判据抓到`)
+    }
   })
   it("判据真的覆盖到 subagent 曾出现的那一面（TOOL_SUMMARIES 在扫描面内）", () => {
     assert.ok(Object.keys(surfaces()).includes("TOOL_SUMMARIES"))
     assert.ok(FORBIDDEN.includes("subagent"))
+  })
+  it("门控开时的两条新文本（PROGRESSIVE_DECL_GATED / DESC_GATED）确实在扫描面内", () => {
+    const keys = Object.keys(surfaces())
+    assert.ok(keys.includes("PROGRESSIVE_DECL_GATED"), "门控开的声明必须被扫（否则是漏洞）")
+    assert.ok(keys.includes("GATE_ON_NOTICE"), "GATE_ON_NOTICE 必须被扫")
+    assert.ok(keys.includes("DESC_GATED"), "门控开的工具描述必须被扫")
+    assert.ok(surfaces().PROGRESSIVE_DECL_GATED.length > 100, "该面非空（否则断言是空跑）")
   })
 })

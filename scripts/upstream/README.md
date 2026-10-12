@@ -44,7 +44,8 @@
 
 - **基线决策**：组件仓库 `dsh-router-standard` origin/main 最新 = `9727510`（2026-08-18），用户拍板"较新者"（2026-08-18 调查确认）。
 - 套件 `dsh-routing-suite` @ d924ed0 仍锁定 preset 指针 `eff787e`（v0.2.0），本快照取组件仓库 main（非套件指针）。
-- 本地源路径：`D:\work_2\dsh-router-standard\preset\router-standard\{router-core.mjs, router-bootstrap.mjs}`
+- 上游路径：组件仓库内 `preset/router-standard/{router-core.mjs, router-bootstrap.mjs}`
+  （**不记本地 checkout 路径**——本仓库是公开仓库，维护者本机目录结构不属于发布内容）。
 - sha256 取自**上游 git 提取原文**（`git show 9727510:preset/router-standard/... | sha256sum`），非本地 checkout 值。
 
 ## 用途

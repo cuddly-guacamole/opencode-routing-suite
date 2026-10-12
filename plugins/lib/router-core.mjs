@@ -1,5 +1,5 @@
 /**
- * router-core (v0.5.0): 渐进披露路由核心 - 纯函数，零依赖，可单测。
+ * router-core (v0.6.0): 渐进披露路由核心 - 纯函数，零依赖，可单测。
  * 来源：dsh-router-standard 快照 @b39112d（standard v1.27.0）派生，
  * v1.18.0→v1.28.0 的逐条裁决与落点见 scripts/upstream/derived-map.md §7 / §8。
  * 语义：三带分类 persona 换装已废弃；分类器仅用于 AUTO 选 agent + dev 展示。
@@ -112,7 +112,7 @@ export const MAX_STAGE = 3
 /** 版本标识（dev_router_status 展示；与 package.json 同步更新）。
  *  两个基线分开记（见 scripts/upstream/derived-map.md §4）：快照来源 = b39112d；
  *  v1.18.0→v1.28.0 的可移植子集已在 v0.5.0 落地，不可移植面按 §7.2 剔除清单逐个删。 */
-export const PLUGIN_VERSION = 'v0.5.0'
+export const PLUGIN_VERSION = 'v0.6.0'
 export const UPSTREAM_BASELINE = '@b39112d snapshot (v1.27.0); v1.18→v1.28 语义已按 §7 裁决移植/剔除'
 
 export const STAGES = [
@@ -122,10 +122,14 @@ export const STAGES = [
   { name: 'Verification', tools: ['bash'] },
 ]
 
-/** 生命周期恒可用（当前版本全量 = 全部工具；门控时用来收窄）。 */
+/** 生命周期恒可用（门控收窄后仍始终可见的那一组）。
+ *  ⚠️ 这里**不再**是「全量」：**v0.6.0** 接上阶段化门控后，写入面（write/edit/apply_patch）
+ *  被移出本表，改由 `unlockedFor(stage)` 在阶段 2 才解锁——否则本表含全部阶段工具，
+ *  `unlockedFor` 四阶段恒等于它，门控会**空转**（一个工具都收不掉）。
+ *  `bash` 刻意保留：`STAGE_GUIDES[0]` 明写早期 sanity check 是允许的。 */
 export const GLOBAL_SAFE = [
-  'read', 'write', 'edit', 'glob', 'grep', 'bash', 'webfetch', 'websearch',
-  'question', 'todowrite', 'task', 'apply_patch', 'skill', 'describe_image',
+  'read', 'glob', 'grep', 'bash', 'webfetch', 'websearch',
+  'question', 'todowrite', 'task', 'skill', 'describe_image',
   'tools_catalog', 'tools_help', 'phase_begin', 'phase_advance',
   'dev_router_status', 'dev_router_mode', 'delivery_check',
 ]
@@ -154,8 +158,10 @@ export function firstUserTask(text) {
 }
 
 /** we-form 阶段文本（you-form 是 let me 吸引子——上游实测结论）。
- *  当前版本无阶段化门控（见 derived-map §7.0 术语）：展示本阶段工具，
- *  措辞用"推荐路线"而非 Unlocked/Locked，避免与全量可调用的事实矛盾。
+ *  展示本阶段工具，措辞用"推荐路线"而非 Unlocked/Locked。
+ *  ⚠️ **v0.6.0** 起阶段化门控**已存在**（`OPENCODE_ROUTER_GATE=1` opt-in，默认关；见 derived-map §7.0 术语）。
+ *  本函数只描述阶段**路线**，不描述工具表的收窄——收窄的告知由 `GATE_ON_NOTICE` /
+ *  `PROGRESSIVE_DECL_GATED` 负责，故此处措辞在门控开/关两种模式下都成立。
  *  taskText = 会话任务回显（上游 v1.19.1 的 `Task:` 行）。 */
 export function stageText(stage, taskText = '') {
   const s = Math.max(0, Math.min(Number(stage) || 0, MAX_STAGE))
@@ -205,15 +211,38 @@ export function beginPhase(state) {
   return { action: 'duplicate', stage: 0 }
 }
 
-/** Bootstrap 声明（上游 @00c81b1 结构；DSH 专属引用已按映射表剔除，
- *  无门控措辞对齐平台事实：所有工具真实在 wire 上，不谎称"注入期隐藏"）。 */
-export const PROGRESSIVE_DECL =
+/** Bootstrap 声明（上游 @00c81b1 结构；DSH 专属引用已按映射表剔除）。
+ *
+ *  ⚠️ **门控是 opt-in**（`OPENCODE_ROUTER_GATE=1`，默认关）⇒ 本声明必须**两种模式下都成立**。
+ *  故第 4 句（「工具恒可调、阶段不是硬门控」）被拆出来由 `PROGRESSIVE_DECL` /
+ *  `PROGRESSIVE_DECL_GATED` 二选一：门控关 → 原文（与 v0.5.0 逐字节相同，零回归）；
+ *  门控开 → 换成 `GATE_ON_NOTICE`（告知写入面被门控 + 何时解锁）。
+ *  **拆句而不是加句**：加句会留下那句已为假的断言（门控开时它是谎话）。 */
+const PROGRESSIVE_DECL_HEAD =
   'We hold a full tool registry (see tools_catalog for the live count), revealed in phases. tools_catalog lists every tool (name + summary); tools_help <name> returns a tool\'s description. We query on demand and call precisely. '
   + 'Meta tools are always available: tools_catalog/tools_help (secondary disclosure), phase_begin/phase_advance (start & level-up), dev_router_status/dev_router_mode (self-check & override), delivery_check (delivery gate). '
   + 'Tool signatures are NOT uniform: before the first use of any tool this session, read its description via tools_catalog or tools_help — never guess. Runtime caps are enforced at call time — check tools_help before big calls. '
-  + 'Tools are directly callable; the phase order is a recommended route, not a hard gate. '
-  + 'write/edit results carry the FULL before/after text — take only path/operation, never print a whole write/edit result (context explosion); inspect the changed lines with grep/read instead.'
+
+const PROGRESSIVE_DECL_TAIL =
+  'write/edit results carry the FULL before/after text — take only path/operation, never print a whole write/edit result (context explosion); inspect the changed lines with grep/read instead.'
   + ' Proactivity protocol: act on reversible next steps; ask only for user-owned choices; report actions with evidence.'
+
+/** 门控**关**（默认）时的第 4 句：工具确实全量可调。 */
+const PHASE_ROUTE_OPEN = 'Tools are directly callable; the phase order is a recommended route, not a hard gate. '
+
+/** 门控**开**时的第 4 句：工具表被收窄到本阶段解锁集，且**说明写入面何时解锁**——
+ *  模型需要可用信息，否则它会反复重试 `write` 并把「工具不在表里」误判成故障。
+ *
+ *  ⚠️ 措辞刻意**不含**「not a hard gate」「恒全量」「全量仍可用」三种说法：门控开时它们为假，
+ *  留着会让判据只能靠子串特例来通过。也**不说**「其余工具照常可调」——门控收窄的是
+ *  **整张表**（`unlockedFor(stage)`），不只是写入面，那句话同样是假的。 */
+export const GATE_ON_NOTICE =
+  'Phase gating is ON for this session: the tool list is narrowed to what the current phase unlocks. The write face (write/edit/apply_patch) unlocks at phase 2 — until then those three are absent from the list. If a tool you expect is missing, that is the gate working as designed, not a fault: finish the current phase (or call phase_advance) instead of retrying the same call. '
+
+export const PROGRESSIVE_DECL = PROGRESSIVE_DECL_HEAD + PHASE_ROUTE_OPEN + PROGRESSIVE_DECL_TAIL
+
+/** 门控开时的声明（与 `PROGRESSIVE_DECL` 只差第 4 句）。 */
+export const PROGRESSIVE_DECL_GATED = PROGRESSIVE_DECL_HEAD + GATE_ON_NOTICE + PROGRESSIVE_DECL_TAIL
 
 /** 主动性自检引导（上游 v1.17.0 用户终审：泄压阀退役，注意力优化即泄压；
  *  上游常量名仍为 PRESSURE_GUIDE，本仓库改用真名并登记漂移。
@@ -222,7 +251,8 @@ export const PROGRESSIVE_DECL =
 export const PROACTIVITY_GUIDE =
   'Proactivity (replaces the pressure valve): every turn, before awaiting the user, scan for the next actionable item — unfinished work, unverified claims, reversible improvements, unfixed warnings. Choose one and act; report what you did and why. Ask only when the choice belongs to the user (preference, budget, irreversible/destructive, external approval). Two or more dependent steps: think step by step, but do not stop to ask permission for reversible work. Depth is our call: a small result gets a small thought, a consequential decision gets full reasoning.'
 
-/** 工具描述单源（上游 v1.13 审计模式）：工具注册与文档读同一份，杜绝双份漂移。 */
+/** 工具描述单源（上游 v1.13 审计模式）：工具注册与文档读同一份，杜绝双份漂移。
+ *  ⚠️ 门控开时「工具恒全量可调」为假 ⇒ `DESC_GATED` 给出 gate-aware 版本（见 `GATE_ON_NOTICE`）。 */
 export const DESC = {
   toolsCatalog: '渐进披露一级：全部工具（名称 + 一行摘要）。query 关键词过滤。工具恒全量可调（阶段是推荐路线，不是硬门控）。',
   toolsHelp: '渐进披露二级：单个工具的描述与阶段归属。精准调用前先查。',
@@ -231,6 +261,12 @@ export const DESC = {
   routerStatus: '渐进披露状态：插件版本/会话 agent/model/阶段/持久化/lastAdvance/override/熔断。只读。',
   deliveryCheck:
     '交付 gate（阶段出口契约）：校验交付物文件存在/非空/UTF-8 + 证据清单 evidence（items[{label, kind ∈ file|page|image|run|test|text|external|numeric, target?, result?, reviewed?}]；page/image 视觉类必须 reviewed:true，run/text 必须带 result，numeric 必须带数值 result（如 12 或 0.0），external 需 target 或 result 任一）。⚠️ describe_image 只是把图片展示出来，本身不构成 reviewed 的视觉检查——不要凭它填 reviewed:true。全部 PASS 才允许向用户宣告完成交付——任一 FAIL 必须修复后重跑，不允许绕过。',
+}
+
+/** 门控开时替换 `DESC` 中已为假的条目（当前只有 `toolsCatalog` 一句）。
+ *  只列**变了**的键；engine 按 `gateEnabled()` 二选一。 */
+export const DESC_GATED = {
+  toolsCatalog: '渐进披露一级：当前**本阶段解锁**的工具（名称 + 一行摘要）。query 关键词过滤。⚠️ 阶段化门控已开启：工具表按阶段收窄，写入面（write/edit/apply_patch）在阶段 2 解锁，在那之前不出现——工具不在表里是门控生效，不是故障。',
 }
 
 /** 菜单入口工具摘要（tools_catalog 用的静态摘要；MCP/动态工具显示 ID）。 */

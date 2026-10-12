@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "Machine-readable mirror of the provenance table in scripts/upstream/README.md §快照清单.",
+    "The Markdown table remains the human source of truth — this file exists only so a",
+    "zero-dependency script can read it. scripts/verify-upstream-snapshot.mjs cross-checks",
+    "every entry below against that table and fails with exit code 2 if the two disagree,",
+    "so neither can be edited without the other.",
+    "",
+    "OUTSTANDING DEBT: until README.md §快照清单 is reworded to point here, this fact has two",
+    "homes. The cross-check makes divergence fail loudly; it does not make it impossible."
+  ],
+  "schema_version": 1,
+  "snapshot_source": {
+    "repo": "dsh-router-standard",
+    "commit": "b39112d",
+    "tag_description": "standard v1.27.0",
+    "prose_source": "scripts/upstream/README.md §快照清单",
+    "update_procedure": "scripts/upstream/README.md §如何更新 (steps 1-7)"
+  },
+  "enforced": [
+    {
+      "file": "router-core.mjs",
+      "upstream_repo": "dsh-router-standard",
+      "commit": "b39112d",
+      "description": "standard v1.27.0 基线（core 与 00c81b1 逐字节相同，2026-08-26 从 git 对象复验，文件未动——仅来源 commit 前移）",
+      "sha256": "544c12c64cb39f4bf8e40b355c35fbcd5ab5d1cc7b7c41d7f5445cebdae3d61c",
+      "bytes": 9900,
+      "prose_line": 29
+    },
+    {
+      "file": "router-bootstrap.mjs",
+      "upstream_repo": "dsh-router-standard",
+      "commit": "b39112dc",
+      "description": "standard v1.27.0（参考地位：DSH 平台代码，opencode 侧重写见 plugins/lib/progressive.ts）",
+      "sha256": "152b9773473ca420d0500e8e0f06534cc315a0f699ec839d11b4d38e043733ed",
+      "bytes": 84429,
+      "prose_line": 30
+    }
+  ],
+  "declared_unenforced": [
+    {
+      "file": "README.md",
+      "reason": "本目录的说明与来源表本身。「如何更新」第 6 步明确要求更新它，所以它按流程必须可改，因此不做逐字节钉死；它的作用由 verify 脚本的 prose 交叉校验守住。"
+    },
+    {
+      "file": "derived-map.md",
+      "reason": "本仓库自有的派生映射与逐版本裁决日志（契约 3.4 补充），允许本地改写并登记漂移，见其 §3/§6/§7。不是上游字节，故无上游 sha256。"
+    },
+    {
+      "file": "mode-boost-core.js",
+      "reason": "README §用途 记为「历史参考」：我方 classifyTask 源自此文件的扩展版正则，**已本地 diverge**。它是上游派生起点而非逐字节快照，故本仓库从未记录其上游 sha256，钉死本地值只会把一次有意为之的本地改写伪装成上游事实。"
+    }
+  ]
+}
